@@ -145,16 +145,17 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             conflict_global_loss = output.new_zeros(1)
             if conflict_maps:
                 boundary_map = compute_boundary_map(target, output.size(1))
-                stage_weight = 1.0 / len(conflict_maps)
+                boundary_losses = []
+                global_losses = []
                 for conflict_map in conflict_maps:
                     boundary_resized = F.interpolate(boundary_map, size=conflict_map.shape[2:], mode='nearest')
-                    conflict_boundary_loss = conflict_boundary_loss + F.l1_loss(conflict_map, boundary_resized)
-                    conflict_global_loss = conflict_global_loss + F.l1_loss(
+                    boundary_losses.append(F.l1_loss(conflict_map, boundary_resized))
+                    global_losses.append(F.l1_loss(
                         conflict_map.mean(dim=(2, 3), keepdim=True),
                         boundary_resized.mean(dim=(2, 3), keepdim=True)
-                    )
-                conflict_boundary_loss = conflict_boundary_loss * stage_weight
-                conflict_global_loss = conflict_global_loss * stage_weight
+                    ))
+                conflict_boundary_loss = torch.stack(boundary_losses).mean()
+                conflict_global_loss = torch.stack(global_losses).mean()
 
             loss = (loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta)
                     + (loss_dice * training_cfg.gamma)

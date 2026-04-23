@@ -26,7 +26,7 @@ bash train_Vaihingen.sh 0
 
 We explicitly model RGB–DSM conflicts as a **first-class supervisory signal** instead of treating them as an implicit byproduct.
 
-**Conflict definition**
+**Conflict definition (cosine similarity on L2-normalized features)**
 
 $$
 C(h,w) = 1 - \text{cosine}(F_{RGB}, F_{DSM})
@@ -50,4 +50,3 @@ $$
 - + Boundary conflict only
 - + Global conflict only
 - + Multi-level (Stage 1–4) conflict supervision (full model)
-
