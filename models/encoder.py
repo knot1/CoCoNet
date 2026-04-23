@@ -360,6 +360,7 @@ class RGBXTransformer(nn.Module):
 
     @staticmethod
     def compute_conflict_map(x_rgb: torch.Tensor, x_e: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        """Compute per-pixel conflict map as 1 - cosine similarity of L2-normalized RGB/DSM features."""
         x_rgb = F.normalize(x_rgb, p=2, dim=1, eps=eps)
         x_e = F.normalize(x_e, p=2, dim=1, eps=eps)
         cos = (x_rgb * x_e).sum(dim=1, keepdim=True)

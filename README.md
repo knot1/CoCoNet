@@ -32,6 +32,8 @@ $$
 C(h,w) = 1 - \text{cosine}(F_{RGB}, F_{DSM})
 $$
 
+Here, $C(h,w)$ denotes a **per-pixel scalar conflict map** obtained by channel-wise cosine similarity aggregation.
+
 **Multi-level conflict maps**
 
 - Stage 1–4 each produces a conflict map.
