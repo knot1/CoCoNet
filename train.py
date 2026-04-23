@@ -141,10 +141,10 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
 
             conflict_boundary_weight = getattr(training_cfg, "conflict_boundary_weight", 0.0)
             conflict_global_weight = getattr(training_cfg, "conflict_global_weight", 0.0)
-            conflict_boundary_loss = output.new_zeros(1)
-            conflict_global_loss = output.new_zeros(1)
+            conflict_boundary_loss = 0.0
+            conflict_global_loss = 0.0
             if conflict_maps:
-                boundary_map = compute_boundary_map(target, output.size(1))
+                boundary_map = compute_boundary_map(target, num_classes=output.size(1))
                 boundary_losses = []
                 global_losses = []
                 for conflict_map in conflict_maps:
