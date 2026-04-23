@@ -6,9 +6,7 @@ import torch
 import torch.nn as nn
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from einops import rearrange
-from .acfm import AdaptiveCrossFrequencyModule
-from .cmsg import CrossModalStructureGuidance
-from .uaf import UncertaintyAwareFusion
+
 
 import matplotlib.pyplot as plt
 import torch_dct as DCT
@@ -257,17 +255,9 @@ class RGBXTransformer(nn.Module):
         self.extra_patch_embed4 = OverlapPatchEmbed(img_size=img_size // 16, patch_size=3, stride=2,
                                                     in_chans=embed_dims[2],
                                                     embed_dim=embed_dims[3])
-        self.acfm4 = AdaptiveCrossFrequencyModule(channels=embed_dims[3], low_radius=0.35)
         
-        self.cmsg1 = CrossModalStructureGuidance(embed_dims[0])
-        self.cmsg2 = CrossModalStructureGuidance(embed_dims[1])
-        self.cmsg3 = CrossModalStructureGuidance(embed_dims[2])
-        self.cmsg4 = CrossModalStructureGuidance(embed_dims[3])
         
-        self.uaf1 = UncertaintyAwareFusion(embed_dims[0])
-        self.uaf2 = UncertaintyAwareFusion(embed_dims[1])
-        self.uaf3 = UncertaintyAwareFusion(embed_dims[2])
-        self.uaf4 = UncertaintyAwareFusion(embed_dims[3])
+        
 
         self.vis_done = False
 
@@ -347,26 +337,6 @@ class RGBXTransformer(nn.Module):
 
         self.apply(self._init_weights)
 
-    def fusion_loss(self, rgb, dsm):
-        acfm_feat = self.acfm4(rgb, dsm)
-
-        cmsg_feat = self.cmsg4(rgb, dsm)
-
-        uaf_feat = self.uaf4(rgb, dsm)
-
-        loss_acfm_uaf = F.l1_loss(acfm_feat, uaf_feat)
-        loss_cmsg_uaf = F.l1_loss(cmsg_feat, uaf_feat)
-
-        L_cons = loss_acfm_uaf + loss_cmsg_uaf
-
-        B, C, H, W = rgb.shape
-        low_mask = self.acfm4._build_low_mask(H, W, rgb.device, rgb.dtype)
-        low_freq_rgb = rgb * low_mask
-        low_freq_dsm = dsm * low_mask
-        low_L_cons = F.mse_loss(low_freq_rgb, low_freq_dsm)
-
-        return L_cons, low_L_cons
-
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
@@ -403,9 +373,8 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm1(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        x_rgb = self.cmsg1(x_rgb, x_e)
 
-        outs_semantic.append(self.uaf1(x_rgb, x_e))
+        outs_semantic.append(self.fuse1(x_rgb, x_e))
 
 
 
@@ -420,8 +389,7 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm2(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        x_rgb = self.cmsg2(x_rgb, x_e)
-        outs_semantic.append(self.uaf2(x_rgb, x_e))
+        outs_semantic.append(self.fuse2(x_rgb, x_e))
 
         # Stage 3
         x_rgb, H, W = self.patch_embed3(x_rgb)
@@ -434,8 +402,7 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm3(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        x_rgb = self.cmsg3(x_rgb, x_e)
-        outs_semantic.append(self.uaf3(x_rgb, x_e))
+        outs_semantic.append(self.fuse3(x_rgb, x_e))
 
         # Stage 4
         x_rgb, H, W = self.patch_embed4(x_rgb)
@@ -448,14 +415,8 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm4(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        x_rgb = self.cmsg4(x_rgb, x_e)
         
-
-      
-
-        x_rgb = self.acfm4(x_rgb, x_e)  # inject DSM freq info into RGB (stage4 only)
-        
-        outs_semantic.append(self.uaf4(x_rgb, x_e))
+        outs_semantic.append(self.fuse4(x_rgb, x_e))
    
         last = outs_semantic[-1]
         if isinstance(last, (tuple, list)):
@@ -468,11 +429,7 @@ class RGBXTransformer(nn.Module):
 
     def forward(self, x_rgb, x_e):
         out_semantic, L_cons, low_L_cons = self.forward_features(x_rgb, x_e)
-        last = out_semantic[-1]
-        if isinstance(last, (tuple, list)):
-            last = last[0]
-
-        L_cons, low_L_cons = self.fusion_loss(last, last)  
+        
         return out_semantic, L_cons, low_L_cons
 
 
