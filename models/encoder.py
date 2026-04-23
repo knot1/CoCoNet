@@ -358,9 +358,17 @@ class RGBXTransformer(nn.Module):
         else:
             raise TypeError('pretrained must be a str or None')
 
+    @staticmethod
+    def compute_conflict_map(x_rgb: torch.Tensor, x_e: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        x_rgb = F.normalize(x_rgb, p=2, dim=1, eps=eps)
+        x_e = F.normalize(x_e, p=2, dim=1, eps=eps)
+        cos = (x_rgb * x_e).sum(dim=1, keepdim=True)
+        return 1.0 - cos
+
     def forward_features(self, x_rgb, x_e):
         B = x_rgb.shape[0]
         outs_semantic = []
+        conflict_maps = []
 
         # Stage 1
         x_rgb, H, W = self.patch_embed1(x_rgb)
@@ -374,6 +382,7 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
 
+        conflict_maps.append(self.compute_conflict_map(x_rgb, x_e))
         outs_semantic.append(self.fuse1(x_rgb, x_e))
 
 
@@ -389,6 +398,7 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm2(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        conflict_maps.append(self.compute_conflict_map(x_rgb, x_e))
         outs_semantic.append(self.fuse2(x_rgb, x_e))
 
         # Stage 3
@@ -402,6 +412,7 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm3(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        conflict_maps.append(self.compute_conflict_map(x_rgb, x_e))
         outs_semantic.append(self.fuse3(x_rgb, x_e))
 
         # Stage 4
@@ -415,6 +426,7 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm4(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        conflict_maps.append(self.compute_conflict_map(x_rgb, x_e))
         
         outs_semantic.append(self.fuse4(x_rgb, x_e))
    
@@ -425,12 +437,12 @@ class RGBXTransformer(nn.Module):
 
         L_cons = last.new_zeros(1)
         low_L_cons = last.new_zeros(1)
-        return outs_semantic, L_cons, low_L_cons
+        return outs_semantic, L_cons, low_L_cons, conflict_maps
 
     def forward(self, x_rgb, x_e):
-        out_semantic, L_cons, low_L_cons = self.forward_features(x_rgb, x_e)
+        out_semantic, L_cons, low_L_cons, conflict_maps = self.forward_features(x_rgb, x_e)
         
-        return out_semantic, L_cons, low_L_cons
+        return out_semantic, L_cons, low_L_cons, conflict_maps
 
 
 def load_dualpath_model(model, model_file, in_chans):

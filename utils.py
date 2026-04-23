@@ -183,6 +183,16 @@ def get_random_pos(img, window_shape):
     return x1, x2, y1, y2
 
 
+def compute_boundary_map(target: torch.Tensor, num_classes: int, kernel_size: int = 3) -> torch.Tensor:
+    if target.dim() != 3:
+        raise ValueError(f"Expected target of shape [B, H, W], got {target.shape}")
+    one_hot = F.one_hot(target, num_classes=num_classes).permute(0, 3, 1, 2).float()
+    padding = kernel_size // 2
+    dilation = F.max_pool2d(one_hot, kernel_size=kernel_size, stride=1, padding=padding)
+    boundary = (dilation - one_hot).sum(dim=1, keepdim=True)
+    return (boundary > 0).float()
+
+
 def CrossEntropy2d(input, target, weight=None, size_average=True):
     dim = input.dim()
     if dim == 2:

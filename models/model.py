@@ -124,16 +124,16 @@ class Baseline(nn.Module):
 
     def encode_decode(self, rgb, modal_x):
         ori_size = rgb.shape
-        x_semantic, L_cons, low_L_cons = self.backbone(rgb, modal_x)
+        x_semantic, L_cons, low_L_cons, conflict_maps = self.backbone(rgb, modal_x)
 
         out_semantic = self.decode_head.forward(x_semantic)
         out_semantic = F.interpolate(out_semantic, size=ori_size[2:], mode='bilinear', align_corners=False)
 
-        return out_semantic, L_cons, low_L_cons
+        return out_semantic, L_cons, low_L_cons, conflict_maps
 
     def forward(self, rgb, modal_x):
         if modal_x.ndim == 3:
             modal_x = torch.unsqueeze(modal_x, dim=1)
-        outputs, L_cons, low_L_cons = self.encode_decode(rgb, modal_x)
+        outputs, L_cons, low_L_cons, conflict_maps = self.encode_decode(rgb, modal_x)
 
-        return outputs, L_cons, low_L_cons
+        return outputs, L_cons, low_L_cons, conflict_maps

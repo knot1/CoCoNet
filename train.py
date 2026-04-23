@@ -4,10 +4,11 @@ import os
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from skimage import io
 
 from utils import format_string, convert_from_color, count_sliding_window, grouper, sliding_window, CrossEntropy2d, dice_loss, \
-    metrics, convert_to_color
+    metrics, convert_to_color, compute_boundary_map
 
 # from loss.uncertainty import uncertainty_loss
 
@@ -68,7 +69,7 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
                     dsm_patches = torch.from_numpy(dsm_patches).cuda()
 
                     # Do the inference
-                    outs, _, _ = model(image_patches, dsm_patches)
+                    outs, _, _, _ = model(image_patches, dsm_patches)
                     outs = outs.data.cpu().numpy()
 
                     # Fill in the results array
@@ -134,11 +135,31 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             opt, dsm, target = opt.cuda(), dsm.cuda(), target.cuda()
             optimizer.zero_grad()
 
-            output, L_cons, low_L_cons = model(opt, dsm)
+            output, L_cons, low_L_cons, conflict_maps = model(opt, dsm)
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
-            
-            loss = loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta) + (loss_dice * training_cfg.gamma)
+
+            conflict_boundary_weight = getattr(training_cfg, "conflict_boundary_weight", 0.0)
+            conflict_global_weight = getattr(training_cfg, "conflict_global_weight", 0.0)
+            conflict_boundary_loss = output.new_zeros(1)
+            conflict_global_loss = output.new_zeros(1)
+            if conflict_maps:
+                boundary_map = compute_boundary_map(target, output.size(1))
+                stage_weight = 1.0 / len(conflict_maps)
+                for conflict_map in conflict_maps:
+                    boundary_resized = F.interpolate(boundary_map, size=conflict_map.shape[2:], mode='nearest')
+                    conflict_boundary_loss = conflict_boundary_loss + F.l1_loss(conflict_map, boundary_resized)
+                    conflict_global_loss = conflict_global_loss + F.l1_loss(
+                        conflict_map.mean(dim=(2, 3), keepdim=True),
+                        boundary_resized.mean(dim=(2, 3), keepdim=True)
+                    )
+                conflict_boundary_loss = conflict_boundary_loss * stage_weight
+                conflict_global_loss = conflict_global_loss * stage_weight
+
+            loss = (loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta)
+                    + (loss_dice * training_cfg.gamma)
+                    + (conflict_boundary_loss * conflict_boundary_weight)
+                    + (conflict_global_loss * conflict_global_weight))
             loss.backward()
             optimizer.step()
 
@@ -232,7 +253,7 @@ def visualize_testloader(model, test_loader, palette, save_root):
     with torch.no_grad():
         for img, dsm, _ in test_loader:
             img, dsm = img.cuda(), dsm.cuda()
-            pred, _, _ = model(img, dsm)
+            pred, _, _, _ = model(img, dsm)
             pred = pred.data.cpu().numpy()
             pred = np.argmax(pred, axis=1)
             for i in range(pred.shape[0]):
