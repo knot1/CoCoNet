@@ -34,3 +34,28 @@ class UncertaintyAwareFusion(nn.Module):
 
         fusion = w_rgb * rgb + w_dsm * dsm
         return fusion
+
+
+class LocalGlobalUAFusion(nn.Module):
+    def __init__(
+        self,
+        channels: int,
+        reduction: int = 4,
+        temperature: float = 1.5,
+        global_reduction: int = 8,
+    ):
+        super().__init__()
+        self.local_fusion = UncertaintyAwareFusion(channels, reduction=reduction, temperature=temperature)
+        mid = max(8, channels // global_reduction)
+        self.global_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels * 2, mid, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid, channels, kernel_size=1, bias=True),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, rgb: torch.Tensor, dsm: torch.Tensor) -> torch.Tensor:
+        fused = self.local_fusion(rgb, dsm)
+        gate = self.global_gate(torch.cat([rgb, dsm], dim=1))
+        return fused * gate

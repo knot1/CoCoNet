@@ -10,6 +10,7 @@ from omegaconf import DictConfig, OmegaConf
 from skimage import io
 
 from models.model import Baseline
+from models.prompt_prior import ClipPromptPrior, build_prompts
 from train import train, test, visualize_testloader
 from utils import ISPRS_dataset, convert_to_color, fix_random_seed
 
@@ -53,6 +54,19 @@ def main(cfg: DictConfig):
         model = Baseline(cfg=model_cfg, num_classes=N_CLASSES, in_chans=[3, 1])
 
     model = model.cuda()
+    prompt_cfg = getattr(cfg, "prompt", None)
+    clip_prior = None
+    if prompt_cfg and getattr(prompt_cfg, "enabled", False):
+        prompts = build_prompts(dataset_cfg.labels, custom_prompts=getattr(prompt_cfg, "prompts", None))
+        clip_prior = ClipPromptPrior(
+            labels=dataset_cfg.labels,
+            prompts=prompts,
+            model_name=getattr(prompt_cfg, "model_name", "ViT-B-32"),
+            pretrained=getattr(prompt_cfg, "pretrained", "laion2b_s34b_b79k"),
+            image_size=getattr(prompt_cfg, "image_size", 224),
+            use_ensemble=getattr(prompt_cfg, "ensemble", True),
+            device=next(model.parameters()).device,
+        )
     model = nn.DataParallel(model)
 
     total_params = sum(param.nelement() for param in model.parameters())
@@ -130,9 +144,10 @@ def main(cfg: DictConfig):
     logger.info('Start training...')
     if cfg.training_dataset == 'WHU' or cfg.training_dataset == 'YESeg':
         train(dataset_cfg, cfg.training, model, optimizer, scheduler, train_loader, WEIGHTS, results_dir,
-              test_loader=test_loader)
+              test_loader=test_loader, prompt_cfg=prompt_cfg, clip_prior=clip_prior)
     else:
-        train(dataset_cfg, cfg.training, model, optimizer, scheduler, train_loader, WEIGHTS, results_dir)
+        train(dataset_cfg, cfg.training, model, optimizer, scheduler, train_loader, WEIGHTS, results_dir,
+              prompt_cfg=prompt_cfg, clip_prior=clip_prior)
     end_train = time.time()
     logger.info('Training time: {:.2f} hours'.format((end_train - start_train) / 3600))
     logger.info("")
@@ -145,7 +160,8 @@ def main(cfg: DictConfig):
         best_model_path = os.path.join(results_dir, 'final_model_vaihingen')
         model.load_state_dict(torch.load(best_model_path, weights_only=True), strict=False)
         model.eval()
-        results, all_preds, all_gts = test(dataset_cfg, cfg.training, model, dataset_cfg.test_ids, all=True)
+        results, all_preds, all_gts = test(dataset_cfg, cfg.training, model, dataset_cfg.test_ids, all=True,
+                                           prompt_cfg=prompt_cfg, clip_prior=clip_prior)
         logger.info('Final model result:')
         logger.info('    Kappa: %s', results["Kappa"])
         logger.info('    OA: %s', results["OA"])
@@ -160,7 +176,8 @@ def main(cfg: DictConfig):
         best_model_path = os.path.join(results_dir, 'final_model_potsdam')
         model.load_state_dict(torch.load(best_model_path, weights_only=True), strict=False)
         model.eval()
-        results, all_preds, all_gts = test(dataset_cfg, cfg.training, model, dataset_cfg.test_ids, all=True)
+        results, all_preds, all_gts = test(dataset_cfg, cfg.training, model, dataset_cfg.test_ids, all=True,
+                                           prompt_cfg=prompt_cfg, clip_prior=clip_prior)
         logger.info('Final model result:')
         logger.info('    Kappa: %s', results["Kappa"])
         logger.info('    OA: %s', results["OA"])

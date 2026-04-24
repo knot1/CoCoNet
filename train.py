@@ -16,12 +16,15 @@ logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
 
 
-def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None):
+def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None, prompt_cfg=None, clip_prior=None):
     if dataset_cfg.name == 'Potsdam' or dataset_cfg.name == 'Vaihingen':
         stride = dataset_cfg.stride_size
     batch_size = training_cfg.batch_size
     window_size = tuple(training_cfg.window_size)
     N_CLASSES = dataset_cfg.n_classes
+    prompt_enabled = bool(prompt_cfg and getattr(prompt_cfg, "enabled", False) and clip_prior is not None)
+    prior_weight = getattr(prompt_cfg, "prior_weight", 0.0) if prompt_enabled else 0.0
+
     # Use the network on the test set
     if dataset_cfg.name == 'Potsdam':
         test_images = (1 / 255 * np.asarray(io.imread(dataset_cfg.data_folder.format(id)), dtype='float32')
@@ -70,6 +73,10 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
 
                     # Do the inference
                     outs, _, _, _ = model(image_patches, dsm_patches)
+                    if prompt_enabled and prior_weight > 0:
+                        prompt_prior = clip_prior.compute_prior(image_patches)
+                        log_prior = clip_prior.logits_from_prior(prompt_prior)
+                        outs = outs + log_prior[:, :, None, None] * prior_weight
                     outs = outs.data.cpu().numpy()
 
                     # Fill in the results array
@@ -104,10 +111,14 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
             return results
 
 
-def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, weights, results_dir, test_loader=None):
+def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, weights, results_dir,
+          test_loader=None, prompt_cfg=None, clip_prior=None):
     weights = weights.cuda()
     epochs = training_cfg.epochs
     save_epoch = training_cfg.save_epoch
+    prompt_enabled = bool(prompt_cfg and getattr(prompt_cfg, "enabled", False) and clip_prior is not None)
+    prior_weight = getattr(prompt_cfg, "prior_weight", 0.0) if prompt_enabled else 0.0
+    sem_loss_weight = getattr(prompt_cfg, "sem_loss_weight", 0.0) if prompt_enabled else 0.0
 
     history = {
         'round': [],
@@ -136,8 +147,19 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             optimizer.zero_grad()
 
             output, L_cons, low_L_cons, conflict_maps = model(opt, dsm)
+            prompt_prior = None
+            if prompt_enabled:
+                prompt_prior = clip_prior.compute_prior(opt)
+                if prior_weight > 0:
+                    log_prior = clip_prior.logits_from_prior(prompt_prior)
+                    output = output + log_prior[:, :, None, None] * prior_weight
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
+            sem_loss = output.new_zeros(1)
+            if sem_loss_weight > 0 and prompt_prior is not None:
+                pred_probs = F.softmax(output, dim=1).mean(dim=(2, 3)).clamp_min(1e-6)
+                target_probs = prompt_prior.clamp_min(1e-6)
+                sem_loss = F.kl_div(pred_probs.log(), target_probs, reduction="batchmean")
 
             conflict_boundary_weight = getattr(training_cfg, "conflict_boundary_weight", 0.0)
             conflict_global_weight = getattr(training_cfg, "conflict_global_weight", 0.0)
@@ -161,7 +183,8 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             loss = (loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta)
                     + (loss_dice * training_cfg.gamma)
                     + (conflict_boundary_loss * conflict_boundary_weight)
-                    + (conflict_global_loss * conflict_global_weight))
+                    + (conflict_global_loss * conflict_global_weight)
+                    + (sem_loss * sem_loss_weight))
             loss.backward()
             optimizer.step()
 
@@ -179,7 +202,8 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             # We validate with the largest possible stride for faster computing
             model.eval()
             
-            results_val = test(dataset_cfg, training_cfg, model, dataset_cfg.test_ids, all=False)
+            results_val = test(dataset_cfg, training_cfg, model, dataset_cfg.test_ids, all=False,
+                               prompt_cfg=prompt_cfg, clip_prior=clip_prior)
             model.train()
 
             MIoU = results_val['MIoU']['mean']

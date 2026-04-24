@@ -26,6 +26,10 @@ model:
   pretrained_backbone: "/home/wsj/CAF-Net-KD/pretrained/mit_b3.pth"
   bn_eps: 0.01
   bn_momentum: 0.01
+  fuse_type: "simple"
+  uaf_reduction: 4
+  uaf_temperature: 1.5
+  uaf_global_reduction: 8
 
 training:
   epochs: 100
@@ -45,6 +49,15 @@ training:
   conflict_boundary_weight: 0.1
   conflict_global_weight: 0.05
   conflict_boundary_kernel: 3
+
+prompt:
+  enabled: false
+  model_name: "ViT-B-32"
+  pretrained: "laion2b_s34b_b79k"
+  image_size: 224
+  ensemble: true
+  prior_weight: 1.0
+  sem_loss_weight: 0.2
 
 dataset:
   name: ${training_dataset}

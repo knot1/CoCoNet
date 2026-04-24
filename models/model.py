@@ -2,19 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import torch
-import torch.nn as nn
-import torch_dct as DCT
-
-import matplotlib.pyplot as plt
-import numpy as np
-import torch_dct as DCT
-import os
-
-import torch
-import torch_dct as DCT
-import matplotlib.pyplot as plt
-import os
+from .uaf import LocalGlobalUAFusion
 
 def denormalize_dsm(x):
     mean = torch.tensor([0.5]).view(1,1,1,1).to(x.device)
@@ -112,7 +100,24 @@ class Baseline(nn.Module):
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
                                        embed_dim=cfg.decoder_embed_dim)
 
+        self._apply_fusion(cfg)
         self.init_weights(cfg, pretrained=cfg.pretrained_backbone)
+
+    def _apply_fusion(self, cfg):
+        fuse_type = getattr(cfg, "fuse_type", "simple")
+        if fuse_type != "lg_uaf":
+            return
+        reduction = getattr(cfg, "uaf_reduction", 4)
+        temperature = getattr(cfg, "uaf_temperature", 1.5)
+        global_reduction = getattr(cfg, "uaf_global_reduction", 8)
+        self.backbone.fuse1 = LocalGlobalUAFusion(self.channels[0], reduction=reduction,
+                                                  temperature=temperature, global_reduction=global_reduction)
+        self.backbone.fuse2 = LocalGlobalUAFusion(self.channels[1], reduction=reduction,
+                                                  temperature=temperature, global_reduction=global_reduction)
+        self.backbone.fuse3 = LocalGlobalUAFusion(self.channels[2], reduction=reduction,
+                                                  temperature=temperature, global_reduction=global_reduction)
+        self.backbone.fuse4 = LocalGlobalUAFusion(self.channels[3], reduction=reduction,
+                                                  temperature=temperature, global_reduction=global_reduction)
 
 
     def init_weights(self, cfg, pretrained=None):
