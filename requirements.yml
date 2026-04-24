@@ -279,6 +279,7 @@ dependencies:
       - opendatalab==0.0.10
       - openmim==0.3.9
       - openpyxl==3.1.5
+      - open_clip_torch==2.26.1
       - openxlab==0.1.2
       - optuna==4.1.0
       - ordered-set==4.1.0

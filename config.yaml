@@ -26,6 +26,11 @@ model:
   pretrained_backbone: "/home/wsj/CAF-Net-KD/pretrained/mit_b3.pth"
   bn_eps: 0.01
   bn_momentum: 0.01
+  prompt_semantic:
+    enabled: false
+    model_name: "ViT-B-32"
+    pretrained: "openai"
+    image_size: 224
 
 training:
   epochs: 100
@@ -42,6 +47,7 @@ training:
   alpha: 0.01
   beta: 0.05
   gamma: 0.5
+  semantic_weight: 0.0
 
 dataset:
   name: ${training_dataset}

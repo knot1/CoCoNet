@@ -4,6 +4,7 @@ import os
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from skimage import io
 
 from utils import format_string, convert_from_color, count_sliding_window, grouper, sliding_window, CrossEntropy2d, dice_loss, \
@@ -68,7 +69,11 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
                     dsm_patches = torch.from_numpy(dsm_patches).cuda()
 
                     # Do the inference
-                    outs, _, _ = model(image_patches, dsm_patches)
+                    model_out = model(image_patches, dsm_patches)
+                    if len(model_out) == 4:
+                        outs, _, _, _ = model_out
+                    else:
+                        outs, _, _ = model_out
                     outs = outs.data.cpu().numpy()
 
                     # Fill in the results array
@@ -134,11 +139,24 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             opt, dsm, target = opt.cuda(), dsm.cuda(), target.cuda()
             optimizer.zero_grad()
 
-            output, L_cons, low_L_cons = model(opt, dsm)
+            model_out = model(opt, dsm)
+            if len(model_out) == 4:
+                output, L_cons, low_L_cons, semantic_prior = model_out
+            else:
+                output, L_cons, low_L_cons = model_out
+                semantic_prior = None
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
             
             loss = loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta) + (loss_dice * training_cfg.gamma)
+            if semantic_prior is not None and getattr(training_cfg, "semantic_weight", 0.0) > 0:
+                pred_probs = F.softmax(output, dim=1)
+                pred_global = pred_probs.mean(dim=(2, 3))
+                eps = 1e-6
+                pred_log = (pred_global + eps).log()
+                target_prior = semantic_prior.clamp(min=eps).detach()
+                loss_sem = F.kl_div(pred_log, target_prior, reduction="batchmean")
+                loss = loss + training_cfg.semantic_weight * loss_sem
             loss.backward()
             optimizer.step()
 
@@ -232,7 +250,11 @@ def visualize_testloader(model, test_loader, palette, save_root):
     with torch.no_grad():
         for img, dsm, _ in test_loader:
             img, dsm = img.cuda(), dsm.cuda()
-            pred, _, _ = model(img, dsm)
+            model_out = model(img, dsm)
+            if len(model_out) == 4:
+                pred, _, _, _ = model_out
+            else:
+                pred, _, _ = model_out
             pred = pred.data.cpu().numpy()
             pred = np.argmax(pred, axis=1)
             for i in range(pred.shape[0]):
