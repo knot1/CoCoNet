@@ -148,8 +148,6 @@ class Baseline(nn.Module):
         if modal_x.ndim == 3:
             modal_x = torch.unsqueeze(modal_x, dim=1)
         outputs, L_cons, low_L_cons = self.encode_decode(rgb, modal_x)
-        semantic_prior = None
-        if self.prompt_semantic is not None:
-            semantic_prior = self.prompt_semantic(rgb)
+        semantic_prior = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
 
         return outputs, L_cons, low_L_cons, semantic_prior

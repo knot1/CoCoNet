@@ -113,6 +113,7 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
     weights = weights.cuda()
     epochs = training_cfg.epochs
     save_epoch = training_cfg.save_epoch
+    semantic_weight = getattr(training_cfg, "semantic_weight", 0.0)
 
     history = {
         'round': [],
@@ -150,13 +151,13 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             loss_dice = dice_loss(output, target)
             
             loss = loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta) + (loss_dice * training_cfg.gamma)
-            if semantic_prior is not None and getattr(training_cfg, "semantic_weight", 0.0) > 0:
+            if semantic_prior is not None and semantic_weight > 0:
                 pred_probs = F.softmax(output, dim=1)
                 pred_global = pred_probs.mean(dim=(2, 3))
-                pred_log = (pred_global + EPS).log()
+                pred_log = torch.log(pred_global + EPS)
                 target_prior = semantic_prior.clamp(min=EPS).detach()
                 loss_sem = F.kl_div(pred_log, target_prior, reduction="batchmean")
-                loss = loss + training_cfg.semantic_weight * loss_sem
+                loss = loss + semantic_weight * loss_sem
             loss.backward()
             optimizer.step()
 

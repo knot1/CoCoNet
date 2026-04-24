@@ -102,7 +102,7 @@ class PromptSemanticPrior(nn.Module):
                 prompt_mask[idx, : len(prompts)] = 1.0
 
         prompt_features = torch.stack(prompt_features, dim=0)
-        prompt_counts = prompt_mask.sum(dim=1, keepdim=True).clamp_min(1.0)
+        prompt_counts = prompt_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
 
         self.register_buffer("prompt_features", prompt_features)
         self.register_buffer("prompt_mask", prompt_mask)
