@@ -112,12 +112,15 @@ class Baseline(nn.Module):
         global_reduction = getattr(cfg, "uaf_global_reduction", 8)
         channels = getattr(self, "channels", None)
         if not channels:
-            raise ValueError("channels must be defined to apply LG-UAF fusion.")
-        for idx, channels in enumerate(channels, start=1):
+            raise ValueError(
+                "The backbone must define a `channels` attribute to apply LG-UAF fusion. "
+                "Check the backbone configuration."
+            )
+        for idx, ch in enumerate(channels, start=1):
             setattr(
                 self.backbone,
                 f"fuse{idx}",
-                LocalGlobalUAFusion(channels, reduction=reduction, temperature=temperature,
+                LocalGlobalUAFusion(ch, reduction=reduction, temperature=temperature,
                                     global_reduction=global_reduction),
             )
 

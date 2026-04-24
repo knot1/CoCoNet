@@ -158,8 +158,8 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             loss_dice = dice_loss(output, target)
             sem_loss = 0.0
             if sem_loss_weight > 0 and prompt_prior is not None:
-                pred_logits = output.mean(dim=(2, 3))
-                pred_probs = F.softmax(pred_logits, dim=1)
+                spatial_avg_logits = output.mean(dim=(2, 3))
+                pred_probs = F.softmax(spatial_avg_logits, dim=1)
                 pred_log_probs = pred_probs.clamp_min(EPS).log()
                 target_probs = prompt_prior.clamp_min(EPS)
                 sem_loss = F.kl_div(pred_log_probs, target_probs, reduction="batchmean", log_target=False)
