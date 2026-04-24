@@ -8,6 +8,7 @@ except ImportError:  # pragma: no cover - handled with runtime guard
 
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+EPS = 1e-6
 
 DEFAULT_PROMPTS = {
     "roads": [
@@ -106,7 +107,7 @@ class ClipPromptPrior:
 
     def _prepare_images(self, images):
         if images.size(1) > 3:
-            # CLIP expects RGB; extra channels (e.g., DSM/IR) are ignored for the prompt prior.
+            # CLIP expects RGB; only the first 3 channels are used for the prompt prior.
             images = images[:, :3]
         images = images.to(self.device)
         images = F.interpolate(images, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
@@ -129,5 +130,5 @@ class ClipPromptPrior:
         return F.softmax(class_sims, dim=1)
 
     @staticmethod
-    def logits_from_prior(prior, eps=1e-6):
+    def logits_from_prior(prior, eps=EPS):
         return prior.clamp_min(eps).log()

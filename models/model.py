@@ -102,6 +102,7 @@ class Baseline(nn.Module):
         self._apply_fusion(cfg)
 
     def _apply_fusion(self, cfg):
+        """Swap backbone fusion modules based on the configured fusion type."""
         fuse_type = getattr(cfg, "fuse_type", "simple")
         if fuse_type != "lg_uaf":
             return

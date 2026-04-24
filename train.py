@@ -156,9 +156,9 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
                     output = output + log_prior[:, :, None, None] * prior_weight
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
-            sem_loss = output.new_zeros(())
+            sem_loss = 0.0
             if sem_loss_weight > 0 and prompt_prior is not None:
-                pred_probs = F.softmax(output, dim=1).mean(dim=(2, 3)).clamp_min(EPS)
+                pred_probs = F.log_softmax(output, dim=1).exp().mean(dim=(2, 3)).clamp_min(EPS)
                 target_probs = prompt_prior.clamp_min(EPS)
                 sem_loss = F.kl_div(pred_probs.log(), target_probs, reduction="batchmean")
 
