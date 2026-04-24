@@ -79,7 +79,7 @@ def group_weight(weight_group, module, norm_layer, lr):
 
 
 class Baseline(nn.Module):
-    def __init__(self, cfg=None, num_classes=None, norm_layer=nn.BatchNorm2d, in_chans=None):
+    def __init__(self, cfg=None, num_classes=None, norm_layer=nn.BatchNorm2d, in_chans=None, class_labels=None):
         super(Baseline, self).__init__()
         self.channels = [64, 128, 320, 512]
         self.norm_layer = norm_layer
@@ -112,6 +112,19 @@ class Baseline(nn.Module):
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
                                        embed_dim=cfg.decoder_embed_dim)
 
+        self.prompt_semantic = None
+        prompt_cfg = getattr(cfg, "prompt_semantic", None)
+        if prompt_cfg is not None and getattr(prompt_cfg, "enabled", False):
+            if class_labels is None:
+                class_labels = [str(idx) for idx in range(num_classes)]
+            from .prompt_semantic import PromptSemanticPrior
+            self.prompt_semantic = PromptSemanticPrior(
+                class_labels=class_labels,
+                model_name=prompt_cfg.model_name,
+                pretrained=prompt_cfg.pretrained,
+                image_size=prompt_cfg.image_size,
+            )
+
         self.init_weights(cfg, pretrained=cfg.pretrained_backbone)
 
 
@@ -135,5 +148,6 @@ class Baseline(nn.Module):
         if modal_x.ndim == 3:
             modal_x = torch.unsqueeze(modal_x, dim=1)
         outputs, L_cons, low_L_cons = self.encode_decode(rgb, modal_x)
+        semantic_prior = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
 
-        return outputs, L_cons, low_L_cons
+        return outputs, L_cons, low_L_cons, semantic_prior

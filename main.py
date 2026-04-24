@@ -48,9 +48,9 @@ def main(cfg: DictConfig):
 
     model_cfg = cfg.model
     if cfg.training_dataset == 'Potsdam':
-        model = Baseline(cfg=model_cfg, num_classes=N_CLASSES, in_chans=[4, 1])
+        model = Baseline(cfg=model_cfg, num_classes=N_CLASSES, in_chans=[4, 1], class_labels=dataset_cfg.labels)
     elif cfg.training_dataset == 'Vaihingen':
-        model = Baseline(cfg=model_cfg, num_classes=N_CLASSES, in_chans=[3, 1])
+        model = Baseline(cfg=model_cfg, num_classes=N_CLASSES, in_chans=[3, 1], class_labels=dataset_cfg.labels)
 
     model = model.cuda()
     model = nn.DataParallel(model)
