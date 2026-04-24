@@ -14,6 +14,7 @@ from utils import format_string, convert_from_color, count_sliding_window, group
 
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
+EPS = 1e-6
 
 
 def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None):
@@ -152,9 +153,8 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             if semantic_prior is not None and getattr(training_cfg, "semantic_weight", 0.0) > 0:
                 pred_probs = F.softmax(output, dim=1)
                 pred_global = pred_probs.mean(dim=(2, 3))
-                eps = 1e-6
-                pred_log = (pred_global + eps).log()
-                target_prior = semantic_prior.clamp(min=eps).detach()
+                pred_log = (pred_global + EPS).log()
+                target_prior = semantic_prior.clamp(min=EPS).detach()
                 loss_sem = F.kl_div(pred_log, target_prior, reduction="batchmean")
                 loss = loss + training_cfg.semantic_weight * loss_sem
             loss.backward()

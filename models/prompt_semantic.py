@@ -135,7 +135,9 @@ class PromptSemanticPrior(nn.Module):
             image_features = self.clip_model.encode_image(images)
             image_features = F.normalize(image_features, dim=-1)
 
-            sim = torch.einsum("bd,kpd->bkp", image_features, self.prompt_features)
+            prompt_features = self.prompt_features
+            image_features_expanded = image_features[:, None, None, :]
+            sim = (image_features_expanded * prompt_features[None, :, :, :]).sum(dim=-1)
             sim = sim * self.prompt_mask.unsqueeze(0)
             sim_mean = sim.sum(dim=2) / self.prompt_counts
 
