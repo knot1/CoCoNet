@@ -110,14 +110,13 @@ class Baseline(nn.Module):
         reduction = getattr(cfg, "uaf_reduction", 4)
         temperature = getattr(cfg, "uaf_temperature", 1.5)
         global_reduction = getattr(cfg, "uaf_global_reduction", 8)
-        self.backbone.fuse1 = LocalGlobalUAFusion(self.channels[0], reduction=reduction,
-                                                  temperature=temperature, global_reduction=global_reduction)
-        self.backbone.fuse2 = LocalGlobalUAFusion(self.channels[1], reduction=reduction,
-                                                  temperature=temperature, global_reduction=global_reduction)
-        self.backbone.fuse3 = LocalGlobalUAFusion(self.channels[2], reduction=reduction,
-                                                  temperature=temperature, global_reduction=global_reduction)
-        self.backbone.fuse4 = LocalGlobalUAFusion(self.channels[3], reduction=reduction,
-                                                  temperature=temperature, global_reduction=global_reduction)
+        for idx, channels in enumerate(self.channels, start=1):
+            setattr(
+                self.backbone,
+                f"fuse{idx}",
+                LocalGlobalUAFusion(channels, reduction=reduction, temperature=temperature,
+                                    global_reduction=global_reduction),
+            )
 
 
     def init_weights(self, cfg, pretrained=None):
