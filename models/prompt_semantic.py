@@ -102,7 +102,7 @@ class PromptSemanticPrior(nn.Module):
                 prompt_mask[idx, : len(prompts)] = 1.0
 
         prompt_features = torch.stack(prompt_features, dim=0)
-        prompt_counts = prompt_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        prompt_counts = prompt_mask.sum(dim=1).clamp(min=1.0)
 
         self.register_buffer("prompt_features", prompt_features)
         self.register_buffer("prompt_mask", prompt_mask)
@@ -136,10 +136,9 @@ class PromptSemanticPrior(nn.Module):
             image_features = F.normalize(image_features, dim=-1)
 
             prompt_features = self.prompt_features
-            image_features_expanded = image_features[:, None, None, :]
-            sim = (image_features_expanded * prompt_features[None, :, :, :]).sum(dim=-1)
+            sim = torch.einsum("bd,kpd->bkp", image_features, prompt_features)
             sim = sim * self.prompt_mask.unsqueeze(0)
-            sim_mean = sim.sum(dim=2) / self.prompt_counts
+            sim_mean = sim.sum(dim=2) / self.prompt_counts.unsqueeze(0)
 
             logit_scale = self.clip_model.logit_scale.exp()
             logits = sim_mean * logit_scale

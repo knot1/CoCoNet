@@ -146,8 +146,9 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             if semantic_prior is not None and semantic_weight > 0:
                 log_probs = F.log_softmax(output, dim=1)
                 num_pixels = output.shape[2] * output.shape[3]
+                # log(mean(exp(log_probs))) for stable global class distribution.
                 pred_log = torch.logsumexp(log_probs, dim=(2, 3)) - math.log(num_pixels)
-                target_prior = semantic_prior.clamp(min=EPS).detach()
+                target_prior = semantic_prior.clamp(min=EPS)
                 # KL divergence between predicted class distribution and CLIP semantic prior.
                 loss_sem = F.kl_div(pred_log, target_prior, reduction="batchmean")
                 loss = loss + semantic_weight * loss_sem
