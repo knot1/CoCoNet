@@ -106,6 +106,7 @@ class ClipPromptPrior:
 
     def _prepare_images(self, images):
         if images.size(1) > 3:
+            # CLIP expects RGB; extra channels (e.g., DSM/IR) are ignored for the prompt prior.
             images = images[:, :3]
         images = images.to(self.device)
         images = F.interpolate(images, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)

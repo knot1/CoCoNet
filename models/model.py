@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .uaf import LocalGlobalUAFusion
-
 def denormalize_dsm(x):
     mean = torch.tensor([0.5]).view(1,1,1,1).to(x.device)
     std = torch.tensor([0.5]).view(1,1,1,1).to(x.device)
@@ -100,13 +98,14 @@ class Baseline(nn.Module):
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
                                        embed_dim=cfg.decoder_embed_dim)
 
-        self._apply_fusion(cfg)
         self.init_weights(cfg, pretrained=cfg.pretrained_backbone)
+        self._apply_fusion(cfg)
 
     def _apply_fusion(self, cfg):
         fuse_type = getattr(cfg, "fuse_type", "simple")
         if fuse_type != "lg_uaf":
             return
+        from .uaf import LocalGlobalUAFusion
         reduction = getattr(cfg, "uaf_reduction", 4)
         temperature = getattr(cfg, "uaf_temperature", 1.5)
         global_reduction = getattr(cfg, "uaf_global_reduction", 8)

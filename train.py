@@ -14,6 +14,7 @@ from utils import format_string, convert_from_color, count_sliding_window, group
 
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
+EPS = 1e-6
 
 
 def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None, prompt_cfg=None, clip_prior=None):
@@ -155,10 +156,10 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
                     output = output + log_prior[:, :, None, None] * prior_weight
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
-            sem_loss = output.new_zeros(1)
+            sem_loss = output.new_zeros(())
             if sem_loss_weight > 0 and prompt_prior is not None:
-                pred_probs = F.softmax(output, dim=1).mean(dim=(2, 3)).clamp_min(1e-6)
-                target_probs = prompt_prior.clamp_min(1e-6)
+                pred_probs = F.softmax(output, dim=1).mean(dim=(2, 3)).clamp_min(EPS)
+                target_probs = prompt_prior.clamp_min(EPS)
                 sem_loss = F.kl_div(pred_probs.log(), target_probs, reduction="batchmean")
 
             conflict_boundary_weight = getattr(training_cfg, "conflict_boundary_weight", 0.0)
