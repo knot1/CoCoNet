@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -54,7 +56,7 @@ def _normalize_label(label: str) -> str:
     return LABEL_ALIASES.get(key, key)
 
 
-def _build_prompts(label: str) -> list[str]:
+def _build_prompts(label: str) -> List[str]:
     if label in PROMPT_BANK:
         return PROMPT_BANK[label]
     normalized = _normalize_label(label)

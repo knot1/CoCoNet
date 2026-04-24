@@ -134,6 +134,8 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
         batch_losses = []
         total_iter = len(train_loader)
         print_interval = max(1, total_iter // 10)
+        cached_num_pixels = None
+        log_num_pixels = None
         for batch_idx, (opt, dsm, target) in enumerate(train_loader):
             opt, dsm, target = opt.cuda(), dsm.cuda(), target.cuda()
             optimizer.zero_grad()
@@ -146,11 +148,14 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             if semantic_prior is not None and semantic_weight > 0:
                 log_probs = F.log_softmax(output, dim=1)
                 num_pixels = output.shape[2] * output.shape[3]
+                if cached_num_pixels != num_pixels:
+                    cached_num_pixels = num_pixels
+                    log_num_pixels = math.log(num_pixels)
                 # log(mean(exp(log_probs))) for stable global class distribution.
-                pred_log = torch.logsumexp(log_probs, dim=(2, 3)) - math.log(num_pixels)
+                pred_log = torch.logsumexp(log_probs, dim=(2, 3)) - log_num_pixels
                 target_prior = semantic_prior.clamp(min=EPS)
                 # KL divergence between predicted class distribution and CLIP semantic prior.
-                loss_sem = F.kl_div(pred_log, target_prior, reduction="batchmean")
+                loss_sem = F.kl_div(pred_log, target_prior, reduction="batchmean", log_target=False)
                 loss = loss + semantic_weight * loss_sem
             loss.backward()
             optimizer.step()
