@@ -17,13 +17,24 @@ logger = logging.getLogger(__name__)
 EPS = 1e-6
 
 
+def _prompt_enabled(prompt_cfg, clip_prior):
+    return bool(prompt_cfg and getattr(prompt_cfg, "enabled", False) and clip_prior is not None)
+
+
+def _apply_prompt_prior(output, prompt_prior, prior_weight, clip_prior):
+    if prompt_prior is None or prior_weight <= 0:
+        return output
+    log_prior = clip_prior.logits_from_prior(prompt_prior)
+    return output + log_prior[:, :, None, None] * prior_weight
+
+
 def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None, prompt_cfg=None, clip_prior=None):
     if dataset_cfg.name == 'Potsdam' or dataset_cfg.name == 'Vaihingen':
         stride = dataset_cfg.stride_size
     batch_size = training_cfg.batch_size
     window_size = tuple(training_cfg.window_size)
     N_CLASSES = dataset_cfg.n_classes
-    prompt_enabled = bool(prompt_cfg and getattr(prompt_cfg, "enabled", False) and clip_prior is not None)
+    prompt_enabled = _prompt_enabled(prompt_cfg, clip_prior)
     prior_weight = getattr(prompt_cfg, "prior_weight", 0.0) if prompt_enabled else 0.0
 
     # Use the network on the test set
@@ -74,10 +85,10 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
 
                     # Do the inference
                     outs, _, _, _ = model(image_patches, dsm_patches)
+                    prompt_prior = None
                     if prompt_enabled and prior_weight > 0:
                         prompt_prior = clip_prior.compute_prior(image_patches)
-                        log_prior = clip_prior.logits_from_prior(prompt_prior)
-                        outs = outs + log_prior[:, :, None, None] * prior_weight
+                    outs = _apply_prompt_prior(outs, prompt_prior, prior_weight, clip_prior)
                     outs = outs.data.cpu().numpy()
 
                     # Fill in the results array
@@ -117,7 +128,7 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
     weights = weights.cuda()
     epochs = training_cfg.epochs
     save_epoch = training_cfg.save_epoch
-    prompt_enabled = bool(prompt_cfg and getattr(prompt_cfg, "enabled", False) and clip_prior is not None)
+    prompt_enabled = _prompt_enabled(prompt_cfg, clip_prior)
     prior_weight = getattr(prompt_cfg, "prior_weight", 0.0) if prompt_enabled else 0.0
     sem_loss_weight = getattr(prompt_cfg, "sem_loss_weight", 0.0) if prompt_enabled else 0.0
 
@@ -149,11 +160,9 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
 
             output, L_cons, low_L_cons, conflict_maps = model(opt, dsm)
             prompt_prior = None
-            if prompt_enabled:
+            if prompt_enabled and (prior_weight > 0 or sem_loss_weight > 0):
                 prompt_prior = clip_prior.compute_prior(opt)
-                if prior_weight > 0:
-                    log_prior = clip_prior.logits_from_prior(prompt_prior)
-                    output = output + log_prior[:, :, None, None] * prior_weight
+            output = _apply_prompt_prior(output, prompt_prior, prior_weight, clip_prior)
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
             sem_loss = 0.0

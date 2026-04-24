@@ -112,9 +112,10 @@ class Baseline(nn.Module):
         global_reduction = getattr(cfg, "uaf_global_reduction", 8)
         channels = getattr(self, "channels", None)
         if not channels:
+            backbone_name = type(self.backbone).__name__
             raise ValueError(
-                "The backbone must define a `channels` attribute to apply LG-UAF fusion. "
-                "Check the backbone configuration."
+                "The backbone must define a `channels` attribute to apply LG-UAF fusion "
+                f"(backbone={backbone_name}). Check the backbone configuration."
             )
         for idx, ch in enumerate(channels, start=1):
             setattr(
