@@ -42,6 +42,9 @@ training:
   alpha: 0.01
   beta: 0.05
   gamma: 0.5
+  conflict_boundary_weight: 0.1
+  conflict_global_weight: 0.05
+  conflict_boundary_kernel: 3
 
 dataset:
   name: ${training_dataset}
