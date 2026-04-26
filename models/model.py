@@ -137,17 +137,29 @@ class Baseline(nn.Module):
 
     def encode_decode(self, rgb, modal_x):
         ori_size = rgb.shape
-        x_semantic, L_cons, low_L_cons = self.backbone(rgb, modal_x)
+
+        semantic_prior = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
+
+        x_semantic, L_cons, low_L_cons = self.backbone(
+            rgb,
+            modal_x,
+            semantic_prior=semantic_prior
+        )
 
         out_semantic = self.decode_head.forward(x_semantic)
-        out_semantic = F.interpolate(out_semantic, size=ori_size[2:], mode='bilinear', align_corners=False)
+        out_semantic = F.interpolate(
+            out_semantic,
+            size=ori_size[2:],
+            mode='bilinear',
+            align_corners=False
+        )
 
-        return out_semantic, L_cons, low_L_cons
+        return out_semantic, L_cons, low_L_cons, semantic_prior
 
     def forward(self, rgb, modal_x):
         if modal_x.ndim == 3:
             modal_x = torch.unsqueeze(modal_x, dim=1)
-        outputs, L_cons, low_L_cons = self.encode_decode(rgb, modal_x)
-        semantic_prior = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
+
+        outputs, L_cons, low_L_cons, semantic_prior = self.encode_decode(rgb, modal_x)
 
         return outputs, L_cons, low_L_cons, semantic_prior

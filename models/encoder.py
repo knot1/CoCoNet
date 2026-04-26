@@ -11,6 +11,7 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 import torch_dct as DCT
 import os
+from .csm import ConflictSemanticModulation
 
 class DWConv(nn.Module):
     def __init__(self, dim=768):
@@ -200,6 +201,33 @@ class OverlapPatchEmbed(nn.Module):
         x = self.norm(x)
         return x, H, W
 
+class HaarWaveletConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Conv2d(in_channels * 4, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        if x.shape[-1] % 2 != 0:
+            x = x[:, :, :, :-1]
+        if x.shape[-2] % 2 != 0:
+            x = x[:, :, :-1, :]
+
+        x00 = x[:, :, 0::2, 0::2]
+        x01 = x[:, :, 0::2, 1::2]
+        x10 = x[:, :, 1::2, 0::2]
+        x11 = x[:, :, 1::2, 1::2]
+
+        LL = (x00 + x01 + x10 + x11) / 4.0
+        LH = (x00 - x01 + x10 - x11) / 4.0
+        HL = (x00 + x01 - x10 - x11) / 4.0
+        HH = (x00 - x01 - x10 + x11) / 4.0
+
+        x_wave = torch.cat([LL, LH, HL, HH], dim=1)
+        return self.proj(x_wave)
 
 class SimpleFusion(nn.Module):
     """
@@ -335,6 +363,20 @@ class RGBXTransformer(nn.Module):
 
         self.fuse4 = SimpleFusion(c=embed_dims[3])
 
+        self.freq4 = HaarWaveletConv(
+            in_channels=embed_dims[3],
+            out_channels=embed_dims[3]
+        )
+
+        self.csm4 = ConflictSemanticModulation(
+            channels=embed_dims[3],
+            num_classes=6,
+            hidden=64
+        )
+
+        self.last_conflict_map = None
+        self.last_fusion_weight = None
+
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -358,78 +400,108 @@ class RGBXTransformer(nn.Module):
         else:
             raise TypeError('pretrained must be a str or None')
 
-    def forward_features(self, x_rgb, x_e):
+    
+    def forward_features(self, x_rgb, x_e, semantic_prior=None):
         B = x_rgb.shape[0]
         outs_semantic = []
 
         # Stage 1
         x_rgb, H, W = self.patch_embed1(x_rgb)
         x_e, _, _ = self.extra_patch_embed1(x_e)
+
         for blk in self.block1:
             x_rgb = blk(x_rgb, H, W)
         for blk in self.extra_block1:
             x_e = blk(x_e, H, W)
+
         x_rgb = self.norm1(x_rgb)
         x_e = self.extra_norm1(x_e)
+
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
 
         outs_semantic.append(self.fuse1(x_rgb, x_e))
 
-
-
         # Stage 2
         x_rgb, H, W = self.patch_embed2(x_rgb)
         x_e, _, _ = self.extra_patch_embed2(x_e)
+
         for blk in self.block2:
             x_rgb = blk(x_rgb, H, W)
         for blk in self.extra_block2:
             x_e = blk(x_e, H, W)
+
         x_rgb = self.norm2(x_rgb)
         x_e = self.extra_norm2(x_e)
+
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
         outs_semantic.append(self.fuse2(x_rgb, x_e))
 
         # Stage 3
         x_rgb, H, W = self.patch_embed3(x_rgb)
         x_e, _, _ = self.extra_patch_embed3(x_e)
+
         for blk in self.block3:
             x_rgb = blk(x_rgb, H, W)
         for blk in self.extra_block3:
             x_e = blk(x_e, H, W)
+
         x_rgb = self.norm3(x_rgb)
         x_e = self.extra_norm3(x_e)
+
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+
         outs_semantic.append(self.fuse3(x_rgb, x_e))
 
         # Stage 4
         x_rgb, H, W = self.patch_embed4(x_rgb)
         x_e, _, _ = self.extra_patch_embed4(x_e)
+
         for blk in self.block4:
             x_rgb = blk(x_rgb, H, W)
         for blk in self.extra_block4:
             x_e = blk(x_e, H, W)
+
         x_rgb = self.norm4(x_rgb)
         x_e = self.extra_norm4(x_e)
+
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        
-        outs_semantic.append(self.fuse4(x_rgb, x_e))
-   
-        last = outs_semantic[-1]
-        if isinstance(last, (tuple, list)):
-            last = last[0]
-        device = last.device
 
+        F_s = self.fuse4(x_rgb, x_e)
+
+        if semantic_prior is not None:
+            F_f = self.freq4(F_s)
+            F_f = F.interpolate(
+                F_f,
+                size=F_s.shape[-2:],
+                mode="bilinear",
+                align_corners=False
+            )
+
+            F_s, C_map, W_map = self.csm4(F_s, F_f, semantic_prior)
+
+            self.last_conflict_map = C_map
+            self.last_fusion_weight = W_map
+        else:
+            self.last_conflict_map = None
+            self.last_fusion_weight = None
+
+        outs_semantic.append(F_s)
+
+        last = outs_semantic[-1]
         L_cons = last.new_zeros(1)
         low_L_cons = last.new_zeros(1)
+
         return outs_semantic, L_cons, low_L_cons
 
-    def forward(self, x_rgb, x_e):
-        out_semantic, L_cons, low_L_cons = self.forward_features(x_rgb, x_e)
-        
+    def forward(self, x_rgb, x_e, semantic_prior=None):
+        out_semantic, L_cons, low_L_cons = self.forward_features(
+            x_rgb, x_e, semantic_prior
+        )
         return out_semantic, L_cons, low_L_cons
 
 
