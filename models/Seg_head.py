@@ -75,12 +75,14 @@ class DecoderHead(nn.Module):
         fuse = self.dropout(_c)
         logits = self.linear_pred(fuse)
 
-        if semantic_prior is not None and semantic_prior.dim() == 2 and semantic_prior.shape[1] == logits.shape[1]:
-            P = F.softmax(logits, dim=1)
-            C = P.max(dim=1, keepdim=True).values
-            S_map = semantic_prior.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, P.shape[2], P.shape[3])
-            D = torch.mean(torch.abs(P - S_map), dim=1, keepdim=True)
-            fuse, _ = self.lguaf(fuse, C, D)
-            logits = self.linear_pred(fuse)
+        if semantic_prior is not None and semantic_prior.dim() == 2:
+            if semantic_prior.shape[1] == logits.shape[1]:
+                P = F.softmax(logits, dim=1)
+                C = P.max(dim=1, keepdim=True).values
+                # [B, K] -> [B, K, H, W] for per-pixel semantic comparison.
+                S_map = semantic_prior.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, P.shape[2], P.shape[3])
+                D = torch.mean(torch.abs(P - S_map), dim=1, keepdim=True)
+                fuse, _ = self.lguaf(fuse, C, D)
+                logits = self.linear_pred(fuse)
 
         return logits
