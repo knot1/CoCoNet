@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .lguaf import LGUAF
+
 
 class MLP(nn.Module):
 
@@ -51,8 +53,9 @@ class DecoderHead(nn.Module):
         )
 
         self.linear_pred = nn.Conv2d(embedding_dim, self.num_classes, kernel_size=1)
+        self.lguaf = LGUAF(embedding_dim)
 
-    def forward(self, inputs):
+    def forward(self, inputs, semantic_prior=None):
         c1, c2, c3, c4 = inputs
 
         n, _, h, w = c4.shape
@@ -69,7 +72,15 @@ class DecoderHead(nn.Module):
         _c1 = self.linear_c1(c1).permute(0, 2, 1).reshape(n, -1, c1.shape[2], c1.shape[3])
 
         _c = self.linear_fuse(torch.cat([_c4, _c3, _c2, _c1], dim=1))
-        x = self.dropout(_c)
-        x = self.linear_pred(x)
+        fuse = self.dropout(_c)
+        logits = self.linear_pred(fuse)
 
-        return x
+        if semantic_prior is not None and semantic_prior.dim() == 2 and semantic_prior.shape[1] == logits.shape[1]:
+            P = F.softmax(logits, dim=1)
+            C = P.max(dim=1, keepdim=True).values
+            S_map = semantic_prior.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, P.shape[2], P.shape[3])
+            D = torch.mean(torch.abs(P - S_map), dim=1, keepdim=True)
+            fuse, _ = self.lguaf(fuse, C, D)
+            logits = self.linear_pred(fuse)
+
+        return logits
