@@ -145,9 +145,9 @@ class Baseline(nn.Module):
         return out_semantic, L_cons, low_L_cons
 
     def forward(self, rgb, modal_x):
+        semantic_prior = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
         if modal_x.ndim == 3:
             modal_x = torch.unsqueeze(modal_x, dim=1)
-        semantic_prior = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
         outputs, L_cons, low_L_cons = self.encode_decode(rgb, modal_x, semantic_prior=semantic_prior)
 
         return outputs, L_cons, low_L_cons, semantic_prior

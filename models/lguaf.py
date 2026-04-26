@@ -13,5 +13,11 @@ class LGUAF(nn.Module):
         )
 
     def forward(self, F_fuse: torch.Tensor, C: torch.Tensor, D: torch.Tensor):
+        """
+        Args:
+            F_fuse: fused feature map [B, C, H, W].
+            C: confidence map [B, 1, H, W].
+            D: semantic inconsistency map [B, 1, H, W].
+        """
         conf = self.head(torch.cat([F_fuse, C, D], dim=1))
         return conf * F_fuse, conf

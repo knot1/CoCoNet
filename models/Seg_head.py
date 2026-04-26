@@ -75,10 +75,12 @@ class DecoderHead(nn.Module):
         fuse = self.dropout(_c)
         logits = self.linear_pred(fuse)
 
+        # semantic_prior expected as [B, K] class distribution aligned with logits.
         if semantic_prior is not None and semantic_prior.dim() == 2 and semantic_prior.shape[1] == logits.shape[1]:
             P = F.softmax(logits, dim=1)
             C = P.max(dim=1, keepdim=True).values
             # [B, K] -> [B, K, H, W] for per-pixel semantic comparison.
+            # Use expand to avoid allocating a full copy of the semantic prior.
             S_map = semantic_prior.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, P.shape[2], P.shape[3])
             D = torch.mean(torch.abs(P - S_map), dim=1, keepdim=True)
             fuse, confidence = self.lguaf(fuse, C, D)
