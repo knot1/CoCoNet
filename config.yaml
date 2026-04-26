@@ -21,13 +21,13 @@ model:
   ffn_dim: 2048
   dropout: 0.5
   num_layers: 1
-  backbone: "mit_b3"
+  backbone: "mit_b4"
   decoder_embed_dim: 512
-  pretrained_backbone: "/home/wsj/CAF-Net-KD/pretrained/mit_b3.pth"
+  pretrained_backbone: "/home/wsj/CAF-Net-KD/pretrained/mit_b4.pth"
   bn_eps: 0.01
   bn_momentum: 0.01
   prompt_semantic:
-    enabled: false
+    enabled: true
     model_name: "ViT-B-32"
     pretrained: "openai"
     image_size: 224

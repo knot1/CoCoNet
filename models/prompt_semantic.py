@@ -79,7 +79,7 @@ class PromptSemanticPrior(nn.Module):
 
         clip_model, _, _ = open_clip.create_model_and_transforms(
             model_name=model_name,
-            pretrained=pretrained,
+            pretrained="/home/wsj/.cache/huggingface/hub/models--timm--vit_base_patch32_clip_224.openai/open_clip_pytorch_model.bin",
         )
         clip_model.eval()
         for param in clip_model.parameters():
