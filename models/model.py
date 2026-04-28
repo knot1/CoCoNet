@@ -1,20 +1,27 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import torch
-import torch.nn as nn
 import torch_dct as DCT
-
 import matplotlib.pyplot as plt
 import numpy as np
-import torch_dct as DCT
 import os
 
-import torch
-import torch_dct as DCT
-import matplotlib.pyplot as plt
-import os
+from .lguaf import LGUAF
+
+EPS = 1e-6
+
+def semantic_disagreement(logits, S):
+    """
+    logits: [B,K,H,W]
+    S:      [B,K]
+    return: [B,1,H,W]
+    """
+    P = torch.softmax(logits, dim=1)
+    B, K, H, W = P.shape
+    S_map = S.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, H, W)
+    D = 1.0 - torch.sum(P * S_map, dim=1, keepdim=True)
+    return D
+
 
 def denormalize_dsm(x):
     mean = torch.tensor([0.5]).view(1,1,1,1).to(x.device)
@@ -25,8 +32,6 @@ def denormalize(x):
     mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1).to(x.device)
     std = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1).to(x.device)
     return x * std + mean
-
-
 
 
 def __init_weight(feature, conv_init, norm_layer, bn_eps, bn_momentum, **kwargs):
@@ -43,11 +48,23 @@ def __init_weight(feature, conv_init, norm_layer, bn_eps, bn_momentum, **kwargs)
 def init_weight(module_list, conv_init, norm_layer, bn_eps, bn_momentum, **kwargs):
     if isinstance(module_list, list):
         for feature in module_list:
-            __init_weight(feature, conv_init, norm_layer, bn_eps, bn_momentum,
-                          **kwargs)
+            __init_weight(
+                feature,
+                conv_init,
+                norm_layer,
+                bn_eps,
+                bn_momentum,
+                **kwargs
+            )
     else:
-        __init_weight(module_list, conv_init, norm_layer, bn_eps, bn_momentum,
-                      **kwargs)
+        __init_weight(
+            module_list,
+            conv_init,
+            norm_layer,
+            bn_eps,
+            bn_momentum,
+            **kwargs
+        )
 
 
 def group_weight(weight_group, module, norm_layer, lr):
@@ -59,12 +76,20 @@ def group_weight(weight_group, module, norm_layer, lr):
             group_decay.append(m.weight)
             if m.bias is not None:
                 group_no_decay.append(m.bias)
-        elif isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.ConvTranspose2d, nn.ConvTranspose3d)):
+        elif isinstance(
+            m,
+            (
+                nn.Conv1d,
+                nn.Conv2d,
+                nn.Conv3d,
+                nn.ConvTranspose2d,
+                nn.ConvTranspose3d,
+            )
+        ):
             group_decay.append(m.weight)
             if m.bias is not None:
                 group_no_decay.append(m.bias)
-        elif isinstance(m, norm_layer) or isinstance(m, nn.BatchNorm1d) or isinstance(m, nn.BatchNorm2d) \
-                or isinstance(m, nn.BatchNorm3d) or isinstance(m, nn.GroupNorm) or isinstance(m, nn.LayerNorm):
+        elif isinstance(m, norm_layer) or isinstance(m, nn.BatchNorm1d) or isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm3d) or isinstance(m, nn.GroupNorm) or isinstance(m, nn.LayerNorm):
             if m.weight is not None:
                 group_no_decay.append(m.weight)
             if m.bias is not None:
@@ -74,12 +99,19 @@ def group_weight(weight_group, module, norm_layer, lr):
 
     assert len(list(module.parameters())) >= len(group_decay) + len(group_no_decay)
     weight_group.append(dict(params=group_decay, lr=lr))
-    weight_group.append(dict(params=group_no_decay, weight_decay=.0, lr=lr))
+    weight_group.append(dict(params=group_no_decay, weight_decay=0.0, lr=lr))
     return weight_group
 
 
 class Baseline(nn.Module):
-    def __init__(self, cfg=None, num_classes=None, norm_layer=nn.BatchNorm2d, in_chans=None, class_labels=None):
+    def __init__(
+        self,
+        cfg=None,
+        num_classes=None,
+        norm_layer=nn.BatchNorm2d,
+        in_chans=None,
+        class_labels=None
+    ):
         super(Baseline, self).__init__()
         self.channels = [64, 128, 320, 512]
         self.norm_layer = norm_layer
@@ -98,7 +130,7 @@ class Baseline(nn.Module):
             from .encoder import mit_b2 as backbone
             self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
         elif cfg.backbone == 'mit_b1':
-            from .encoder import mit_b0 as backbone
+            from .encoder import mit_b1 as backbone
             self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
         elif cfg.backbone == 'mit_b0':
             from .encoder import mit_b0 as backbone
@@ -109,8 +141,12 @@ class Baseline(nn.Module):
             self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
 
         from .Seg_head import DecoderHead
-        self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
-                                       embed_dim=cfg.decoder_embed_dim)
+        self.decode_head = DecoderHead(
+            in_channels=self.channels,
+            num_classes=num_classes,
+            norm_layer=norm_layer,
+            embed_dim=cfg.decoder_embed_dim
+        )
 
         self.prompt_semantic = None
         prompt_cfg = getattr(cfg, "prompt_semantic", None)
@@ -125,15 +161,34 @@ class Baseline(nn.Module):
                 image_size=prompt_cfg.image_size,
             )
 
-        self.init_weights(cfg, pretrained=cfg.pretrained_backbone)
+        self.lguaf = LGUAF(channels=self.channels[-1])
+        self.last_lguaf_conf = None
+        self.last_semantic_disagreement = None
 
+        self.init_weights(cfg, pretrained=cfg.pretrained_backbone)
 
     def init_weights(self, cfg, pretrained=None):
         if pretrained:
             self.backbone.init_weights(pretrained=pretrained)
-        init_weight(self.decode_head, nn.init.kaiming_normal_,
-                    self.norm_layer, cfg.bn_eps, cfg.bn_momentum,
-                    mode='fan_in', nonlinearity='relu')
+        init_weight(
+            self.decode_head,
+            nn.init.kaiming_normal_,
+            self.norm_layer,
+            cfg.bn_eps,
+            cfg.bn_momentum,
+            mode='fan_in',
+            nonlinearity='relu'
+        )
+
+        init_weight(
+            self.lguaf,
+            nn.init.kaiming_normal_,
+            self.norm_layer,
+            cfg.bn_eps,
+            cfg.bn_momentum,
+            mode='fan_in',
+            nonlinearity='relu'
+        )
 
     def encode_decode(self, rgb, modal_x):
         ori_size = rgb.shape
@@ -159,7 +214,53 @@ class Baseline(nn.Module):
     def forward(self, rgb, modal_x):
         if modal_x.ndim == 3:
             modal_x = torch.unsqueeze(modal_x, dim=1)
-
-        outputs, L_cons, low_L_cons, semantic_prior = self.encode_decode(rgb, modal_x)
-
-        return outputs, L_cons, low_L_cons, semantic_prior
+        ori_size = rgb.shape
+        S = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
+        # 注意：只跑创新点2+3时，encoder 不接收 semantic_prior
+        # x_semantic, L_cons, low_L_cons = self.backbone(rgb, modal_x)
+        x_semantic, L_cons, low_L_cons = self.backbone(
+            rgb,
+            modal_x,
+            semantic_prior=S
+        )
+        logits_initial = self.decode_head.forward(x_semantic)
+        logits_initial = F.interpolate(
+            logits_initial,
+            size=ori_size[2:],
+            mode='bilinear',
+            align_corners=False
+        )
+        if S is not None:
+            F_last = x_semantic[-1]
+            C_map = torch.zeros(
+                F_last.size(0),
+                1,
+                F_last.size(2),
+                F_last.size(3),
+                device=F_last.device,
+                dtype=F_last.dtype
+            )
+            D_map = semantic_disagreement(logits_initial, S)
+            D_map = F.interpolate(
+                D_map,
+                size=F_last.shape[2:],
+                mode='bilinear',
+                align_corners=False
+            )
+            F_refined, conf = self.lguaf(F_last, C_map, D_map)
+            x_semantic_refined = list(x_semantic)
+            x_semantic_refined[-1] = F_refined
+            logits_final = self.decode_head.forward(x_semantic_refined)
+            logits_final = F.interpolate(
+                logits_final,
+                size=ori_size[2:],
+                mode='bilinear',
+                align_corners=False
+            )
+            self.last_lguaf_conf = conf
+            self.last_semantic_disagreement = D_map
+        else:
+            logits_final = logits_initial
+            self.last_lguaf_conf = None
+            self.last_semantic_disagreement = None
+        return logits_final, L_cons, low_L_cons, S
