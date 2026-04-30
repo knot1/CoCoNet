@@ -1,0 +1,4 @@
+model:
+  enable_prompt_semantic: true
+  enable_csm: true
+  enable_lguaf: true
