@@ -90,23 +90,23 @@ class Baseline(nn.Module):
 
         if cfg.backbone == 'mit_b5':
             from .encoder import mit_b5 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
         elif cfg.backbone == 'mit_b4':
             from .encoder import mit_b4 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
         elif cfg.backbone == 'mit_b2':
             from .encoder import mit_b2 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
         elif cfg.backbone == 'mit_b1':
-            from .encoder import mit_b0 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            from .encoder import mit_b1 as backbone
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
         elif cfg.backbone == 'mit_b0':
             from .encoder import mit_b0 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
             self.channels = [32, 64, 160, 256]
         else:
             from .encoder import mit_b4 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
 
         from .Seg_head import DecoderHead
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
@@ -135,9 +135,13 @@ class Baseline(nn.Module):
                     self.norm_layer, cfg.bn_eps, cfg.bn_momentum,
                     mode='fan_in', nonlinearity='relu')
 
-    def encode_decode(self, rgb, modal_x):
+    def encode_decode(self, rgb, modal_x, semantic_prior=None):
         ori_size = rgb.shape
-        x_semantic, L_cons, low_L_cons = self.backbone(rgb, modal_x)
+        x_semantic, L_cons, low_L_cons = self.backbone(
+            rgb,
+            modal_x,
+            semantic_prior=semantic_prior
+        )
 
         out_semantic = self.decode_head.forward(x_semantic)
         out_semantic = F.interpolate(out_semantic, size=ori_size[2:], mode='bilinear', align_corners=False)
@@ -147,7 +151,15 @@ class Baseline(nn.Module):
     def forward(self, rgb, modal_x):
         if modal_x.ndim == 3:
             modal_x = torch.unsqueeze(modal_x, dim=1)
-        outputs, L_cons, low_L_cons = self.encode_decode(rgb, modal_x)
+
         semantic_prior = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
+        if isinstance(semantic_prior, (tuple, list)):
+            semantic_prior = semantic_prior[0]
+
+        outputs, L_cons, low_L_cons = self.encode_decode(
+            rgb,
+            modal_x,
+            semantic_prior=semantic_prior
+        )
 
         return outputs, L_cons, low_L_cons, semantic_prior

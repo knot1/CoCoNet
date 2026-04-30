@@ -219,6 +219,75 @@ class SimpleFusion(nn.Module):
         return self.proj(x)
 
 
+class SemanticGuidedFeatureModulation(nn.Module):
+    """
+    Semantic-guided feature modulation for CLIP/VLM prior.
+
+    Inputs:
+        feat:           [B, C, H, W], fused spatial/frequency or RGB/DSM feature
+        semantic_prior: [B, K], class-level CLIP semantic prior
+        conflict_map:   [B, 1, H, W], pixel-wise feature conflict map
+
+    Output:
+        feat_mod:       [B, C, H, W]
+
+    Design:
+        1) semantic_prior -> channel gate
+        2) conflict_map   -> spatial gate
+        3) semantic gate and conflict gate jointly modulate fused feature
+    """
+    def __init__(self, num_classes: int, channels: int, reduction: int = 4):
+        super().__init__()
+        hidden_dim = max(channels // reduction, 32)
+
+        self.semantic_mlp = nn.Sequential(
+            nn.Linear(num_classes, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, channels),
+            nn.Sigmoid()
+        )
+
+        self.conflict_gate = nn.Sequential(
+            nn.Conv2d(1, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.Sigmoid()
+        )
+
+        # small initial value avoids destroying pretrained SegFormer features at the beginning
+        self.gamma = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
+
+    def forward(self, feat: torch.Tensor, semantic_prior=None, conflict_map=None):
+        if semantic_prior is None:
+            return feat
+
+        if semantic_prior.dim() != 2:
+            return feat
+
+        B, C, H, W = feat.shape
+
+        # If CLIP returns tuple/list, use the first tensor outside this module.
+        if semantic_prior.shape[0] != B:
+            return feat
+
+        # semantic channel gate: [B, K] -> [B, C, 1, 1]
+        channel_gate = self.semantic_mlp(semantic_prior.float()).view(B, C, 1, 1)
+
+        if conflict_map is not None:
+            if conflict_map.shape[-2:] != (H, W):
+                conflict_map = F.interpolate(
+                    conflict_map,
+                    size=(H, W),
+                    mode='bilinear',
+                    align_corners=False
+                )
+            spatial_gate = self.conflict_gate(conflict_map.float())
+            gate = channel_gate * spatial_gate
+        else:
+            gate = channel_gate
+
+        return feat + self.gamma * feat * gate
+
+
 class RGBXTransformer(nn.Module):
     def __init__(self, img_size=256, patch_size=16, in_chans=None, num_classes=1000, embed_dims=[64, 128, 256, 512],
                  num_heads=[1, 2, 4, 8], mlp_ratios=[4, 4, 4, 4], qkv_bias=False, qk_scale=None, drop_rate=0.,
@@ -334,6 +403,10 @@ class RGBXTransformer(nn.Module):
         self.extra_norm4 = norm_layer(embed_dims[3])
 
         self.fuse4 = SimpleFusion(c=embed_dims[3])
+        self.semantic_mod4 = SemanticGuidedFeatureModulation(
+            num_classes=num_classes,
+            channels=embed_dims[3]
+        )
 
         self.apply(self._init_weights)
 
@@ -358,7 +431,7 @@ class RGBXTransformer(nn.Module):
         else:
             raise TypeError('pretrained must be a str or None')
 
-    def forward_features(self, x_rgb, x_e):
+    def forward_features(self, x_rgb, x_e, semantic_prior=None):
         B = x_rgb.shape[0]
         outs_semantic = []
 
@@ -416,7 +489,17 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         
-        outs_semantic.append(self.fuse4(x_rgb, x_e))
+        # conflict map between two branches before fusion: [B, 1, H, W]
+        conflict_map = 1.0 - torch.sum(
+            F.normalize(x_rgb, dim=1) * F.normalize(x_e, dim=1),
+            dim=1,
+            keepdim=True
+        )
+        conflict_map = torch.clamp(conflict_map, min=0.0, max=2.0)
+
+        fused4 = self.fuse4(x_rgb, x_e)
+        fused4 = self.semantic_mod4(fused4, semantic_prior=semantic_prior, conflict_map=conflict_map)
+        outs_semantic.append(fused4)
    
         last = outs_semantic[-1]
         if isinstance(last, (tuple, list)):
@@ -427,8 +510,12 @@ class RGBXTransformer(nn.Module):
         low_L_cons = last.new_zeros(1)
         return outs_semantic, L_cons, low_L_cons
 
-    def forward(self, x_rgb, x_e):
-        out_semantic, L_cons, low_L_cons = self.forward_features(x_rgb, x_e)
+    def forward(self, x_rgb, x_e, semantic_prior=None):
+        out_semantic, L_cons, low_L_cons = self.forward_features(
+            x_rgb,
+            x_e,
+            semantic_prior=semantic_prior
+        )
         
         return out_semantic, L_cons, low_L_cons
 
@@ -491,7 +578,7 @@ class mit_b0(RGBXTransformer):
         super(mit_b0, self).__init__(
             patch_size=4, embed_dims=[32, 64, 160, 256], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[2, 2, 2, 2], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b1(RGBXTransformer):
@@ -499,7 +586,7 @@ class mit_b1(RGBXTransformer):
         super(mit_b1, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[2, 2, 2, 2], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b2(RGBXTransformer):
@@ -507,7 +594,7 @@ class mit_b2(RGBXTransformer):
         super(mit_b2, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b3(RGBXTransformer):
@@ -515,7 +602,7 @@ class mit_b3(RGBXTransformer):
         super(mit_b3, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 4, 18, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b4(RGBXTransformer):
@@ -523,7 +610,7 @@ class mit_b4(RGBXTransformer):
         super(mit_b4, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 8, 27, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=in_chans)
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=in_chans, num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b5(RGBXTransformer):
@@ -531,4 +618,4 @@ class mit_b5(RGBXTransformer):
         super(mit_b5, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 6, 40, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
