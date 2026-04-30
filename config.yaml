@@ -1,6 +1,6 @@
 # configs/config.yaml
 cuda_visible_devices: [0,1]
-training_model: "Baseline"
+training_model: "logs/Full"
 # training_dataset: "Vaihingen"
 training_dataset: "Potsdam"
 seed: 42

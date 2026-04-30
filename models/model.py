@@ -120,25 +120,26 @@ class Baseline(nn.Module):
         else:
             self.in_chans = [3, 1]
 
+        # 🚀 修复：实例化 backbone 时，加上 num_classes=num_classes，打通向编码器的传参通道
         if cfg.backbone == 'mit_b5':
             from .encoder import mit_b5 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
         elif cfg.backbone == 'mit_b4':
             from .encoder import mit_b4 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
         elif cfg.backbone == 'mit_b2':
             from .encoder import mit_b2 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
         elif cfg.backbone == 'mit_b1':
             from .encoder import mit_b1 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
         elif cfg.backbone == 'mit_b0':
             from .encoder import mit_b0 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
             self.channels = [32, 64, 160, 256]
         else:
             from .encoder import mit_b4 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
 
         from .Seg_head import DecoderHead
         self.decode_head = DecoderHead(
@@ -195,6 +196,10 @@ class Baseline(nn.Module):
 
         semantic_prior = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
 
+        # 🚀 修复：如果 prompt 模块返回的是 tuple，只取第一个元素，避免由于类型错误导致的维度崩溃
+        if isinstance(semantic_prior, (tuple, list)):
+            semantic_prior = semantic_prior[0]
+
         x_semantic, L_cons, low_L_cons = self.backbone(
             rgb,
             modal_x,
@@ -216,6 +221,11 @@ class Baseline(nn.Module):
             modal_x = torch.unsqueeze(modal_x, dim=1)
         ori_size = rgb.shape
         S = self.prompt_semantic(rgb) if self.prompt_semantic is not None else None
+        
+        # 🚀 修复：同样在这里加上容错处理，保证丢给 semantic_disagreement 的 S 是纯 Tensor
+        if isinstance(S, (tuple, list)):
+            S = S[0]
+
         # 注意：只跑创新点2+3时，encoder 不接收 semantic_prior
         # x_semantic, L_cons, low_L_cons = self.backbone(rgb, modal_x)
         x_semantic, L_cons, low_L_cons = self.backbone(
@@ -230,6 +240,8 @@ class Baseline(nn.Module):
             mode='bilinear',
             align_corners=False
         )
+        
+        # 下面是你核心的 LGUAF 处理逻辑，原封不动保留
         if S is not None:
             F_last = x_semantic[-1]
             C_map = torch.zeros(

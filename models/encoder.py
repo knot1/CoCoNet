@@ -368,9 +368,10 @@ class RGBXTransformer(nn.Module):
             out_channels=embed_dims[3]
         )
 
+        # 🚀 修复：将固定的 6 改为 self.num_classes，确保你的 CSM 模块可以接收动态类别的 semantic_prior
         self.csm4 = ConflictSemanticModulation(
             channels=embed_dims[3],
-            num_classes=6,
+            num_classes=self.num_classes, 
             hidden=64
         )
 
@@ -473,6 +474,7 @@ class RGBXTransformer(nn.Module):
 
         F_s = self.fuse4(x_rgb, x_e)
 
+        # 这里的 csm4 接收 semantic_prior 逻辑完全保留，未做改动
         if semantic_prior is not None:
             F_f = self.freq4(F_s)
             F_f = F.interpolate(
@@ -558,12 +560,15 @@ def _adapt_first_conv(weight, in_chans: int):
     return new_weight
 
 
+# 🚀 修复：让所有底层类通过 kwargs 接收并向上传递 in_chans 和 num_classes
 class mit_b0(RGBXTransformer):
     def __init__(self, fuse_cfg=None, **kwargs):
         super(mit_b0, self).__init__(
             patch_size=4, embed_dims=[32, 64, 160, 256], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[2, 2, 2, 2], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, 
+            in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b1(RGBXTransformer):
@@ -571,7 +576,9 @@ class mit_b1(RGBXTransformer):
         super(mit_b1, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[2, 2, 2, 2], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, 
+            in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b2(RGBXTransformer):
@@ -579,7 +586,9 @@ class mit_b2(RGBXTransformer):
         super(mit_b2, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, 
+            in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b3(RGBXTransformer):
@@ -587,15 +596,19 @@ class mit_b3(RGBXTransformer):
         super(mit_b3, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 4, 18, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, 
+            in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b4(RGBXTransformer):
-    def __init__(self, in_chans, fuse_cfg=None, **kwargs):
+    def __init__(self, fuse_cfg=None, **kwargs): # 注意：此处帮你统一移除了位置参数 in_chans，以防传参报错
         super(mit_b4, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 8, 27, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=in_chans)
+            drop_rate=0.0, drop_path_rate=0.1, 
+            in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000))
 
 
 class mit_b5(RGBXTransformer):
@@ -603,4 +616,6 @@ class mit_b5(RGBXTransformer):
         super(mit_b5, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 6, 40, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=None)
+            drop_rate=0.0, drop_path_rate=0.1, 
+            in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000))
