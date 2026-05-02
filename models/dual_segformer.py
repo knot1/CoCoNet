@@ -78,14 +78,15 @@ class ModelConfig:
     def from_cfg(cls, cfg):
         if cfg is None:
             return cls()
-        use_safr = getattr(cfg, "use_safr", cls.use_safr)
-        use_caf = getattr(cfg, "use_caf", cls.use_caf)
-        use_vlsp = getattr(cfg, "use_vlsp", cls.use_vlsp)
+        defaults = cls()
+        use_safr = getattr(cfg, "use_safr", defaults.use_safr)
+        use_caf = getattr(cfg, "use_caf", defaults.use_caf)
+        use_vlsp = getattr(cfg, "use_vlsp", defaults.use_vlsp)
 
         vlsp_cfg = getattr(cfg, "vlsp", None)
-        inject_stage2 = getattr(vlsp_cfg, "inject_stage2", cls.inject_stage2) if vlsp_cfg is not None else cls.inject_stage2
-        inject_stage3 = getattr(vlsp_cfg, "inject_stage3", cls.inject_stage3) if vlsp_cfg is not None else cls.inject_stage3
-        inject_stage4 = getattr(vlsp_cfg, "inject_stage4", cls.inject_stage4) if vlsp_cfg is not None else cls.inject_stage4
+        inject_stage2 = getattr(vlsp_cfg, "inject_stage2", defaults.inject_stage2) if vlsp_cfg is not None else defaults.inject_stage2
+        inject_stage3 = getattr(vlsp_cfg, "inject_stage3", defaults.inject_stage3) if vlsp_cfg is not None else defaults.inject_stage3
+        inject_stage4 = getattr(vlsp_cfg, "inject_stage4", defaults.inject_stage4) if vlsp_cfg is not None else defaults.inject_stage4
         return cls(
             use_safr=use_safr,
             use_caf=use_caf,
@@ -138,9 +139,10 @@ class Baseline(nn.Module):
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
                                        embed_dim=cfg.decoder_embed_dim)
 
+        self.requires_semantic_prior = self.model_cfg.use_vlsp or self.model_cfg.use_safr
         self.prompt_semantic = None
         prompt_cfg = getattr(cfg, "prompt_semantic", None)
-        if prompt_cfg is not None and getattr(prompt_cfg, "enabled", False):
+        if prompt_cfg is not None and getattr(prompt_cfg, "enabled", False) and self.requires_semantic_prior:
             if class_labels is None:
                 class_labels = [str(idx) for idx in range(num_classes)]
             from .prompt_semantic import PromptSemanticPrior
@@ -151,7 +153,6 @@ class Baseline(nn.Module):
                 image_size=prompt_cfg.image_size,
             )
 
-        self.requires_semantic_prior = self.model_cfg.use_vlsp or self.model_cfg.use_safr
         self.init_weights(cfg, pretrained=cfg.pretrained_backbone)
 
     def init_weights(self, cfg, pretrained=None):
