@@ -18,7 +18,7 @@ def denormalize(x):
 
 
 def __init_weight(feature, conv_init, norm_layer, bn_eps, bn_momentum, **kwargs):
-    for _, m in feature.named_modules():
+    for module_name, m in feature.named_modules():
         if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
             conv_init(m.weight, **kwargs)
         elif isinstance(m, norm_layer):
