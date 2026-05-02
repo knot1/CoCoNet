@@ -26,6 +26,13 @@ model:
   pretrained_backbone: "/home/wsj/CAF-Net-KD/pretrained/mit_b4.pth"
   bn_eps: 0.01
   bn_momentum: 0.01
+  use_safr: true
+  use_caf: true
+  use_vlsp: true
+  vlsp:
+    inject_stage2: false
+    inject_stage3: false
+    inject_stage4: true
   prompt_semantic:
     enabled: true
     model_name: "ViT-B-32"

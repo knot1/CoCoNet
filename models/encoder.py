@@ -1,7 +1,6 @@
 import math
 import time
 from functools import partial
-import torch.nn.functional as F
 import torch
 import torch.nn as nn
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
@@ -11,6 +10,10 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 import torch_dct as DCT
 import os
+
+from .caf import SimpleFusion, ConflictAwareFusionBlock, compute_conflict_map
+from .safr import SemanticAwareRefinementBlock
+from .vlsp import VLSPModule
 
 class DWConv(nn.Module):
     def __init__(self, dim=768):
@@ -201,98 +204,11 @@ class OverlapPatchEmbed(nn.Module):
         return x, H, W
 
 
-class SimpleFusion(nn.Module):
-    """
-    Baseline fusion (no ASD / no LFGF / no CFI):
-    concat(rgb_feat, extra_feat) -> 1x1 conv -> fused_feat
-    """
-    def __init__(self, c: int):
-        super().__init__()
-        self.proj = nn.Sequential(
-            nn.Conv2d(c * 2, c, kernel_size=1, bias=False),
-            nn.BatchNorm2d(c),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, x_rgb: torch.Tensor, x_e: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([x_rgb, x_e], dim=1)
-        return self.proj(x)
-
-
-class SemanticGuidedFeatureModulation(nn.Module):
-    """
-    Semantic-guided feature modulation for CLIP/VLM prior.
-
-    Inputs:
-        feat:           [B, C, H, W], fused spatial/frequency or RGB/DSM feature
-        semantic_prior: [B, K], class-level CLIP semantic prior
-        conflict_map:   [B, 1, H, W], pixel-wise feature conflict map
-
-    Output:
-        feat_mod:       [B, C, H, W]
-
-    Design:
-        1) semantic_prior -> channel gate
-        2) conflict_map   -> spatial gate
-        3) semantic gate and conflict gate jointly modulate fused feature
-    """
-    def __init__(self, num_classes: int, channels: int, reduction: int = 4):
-        super().__init__()
-        hidden_dim = max(channels // reduction, 32)
-
-        self.semantic_mlp = nn.Sequential(
-            nn.Linear(num_classes, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, channels),
-            nn.Sigmoid()
-        )
-
-        self.conflict_gate = nn.Sequential(
-            nn.Conv2d(1, channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(channels),
-            nn.Sigmoid()
-        )
-
-        # small initial value avoids destroying pretrained SegFormer features at the beginning
-        self.gamma = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
-
-    def forward(self, feat: torch.Tensor, semantic_prior=None, conflict_map=None):
-        if semantic_prior is None:
-            return feat
-
-        if semantic_prior.dim() != 2:
-            return feat
-
-        B, C, H, W = feat.shape
-
-        # If CLIP returns tuple/list, use the first tensor outside this module.
-        if semantic_prior.shape[0] != B:
-            return feat
-
-        # semantic channel gate: [B, K] -> [B, C, 1, 1]
-        channel_gate = self.semantic_mlp(semantic_prior.float()).view(B, C, 1, 1)
-
-        if conflict_map is not None:
-            if conflict_map.shape[-2:] != (H, W):
-                conflict_map = F.interpolate(
-                    conflict_map,
-                    size=(H, W),
-                    mode='bilinear',
-                    align_corners=False
-                )
-            spatial_gate = self.conflict_gate(conflict_map.float())
-            gate = channel_gate * spatial_gate
-        else:
-            gate = channel_gate
-
-        return feat + self.gamma * feat * gate
-
-
 class RGBXTransformer(nn.Module):
     def __init__(self, img_size=256, patch_size=16, in_chans=None, num_classes=1000, embed_dims=[64, 128, 256, 512],
                  num_heads=[1, 2, 4, 8], mlp_ratios=[4, 4, 4, 4], qkv_bias=False, qk_scale=None, drop_rate=0.,
                  attn_drop_rate=0., drop_path_rate=0., norm_layer=nn.LayerNorm, norm_fuse=nn.BatchNorm2d,
-                 depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1]):
+                 depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1], fuse_cfg=None):
         super().__init__()
         self.num_classes = num_classes
         self.depths = depths
@@ -300,6 +216,13 @@ class RGBXTransformer(nn.Module):
             self.in_chans = in_chans
         else:
             raise ValueError('in_chans should not be None')
+
+        self.use_safr = getattr(fuse_cfg, "use_safr", True) if fuse_cfg is not None else True
+        self.use_caf = getattr(fuse_cfg, "use_caf", True) if fuse_cfg is not None else True
+        self.use_vlsp = getattr(fuse_cfg, "use_vlsp", True) if fuse_cfg is not None else True
+        self.vlsp_inject_stage2 = getattr(fuse_cfg, "inject_stage2", False) if fuse_cfg is not None else False
+        self.vlsp_inject_stage3 = getattr(fuse_cfg, "inject_stage3", False) if fuse_cfg is not None else False
+        self.vlsp_inject_stage4 = getattr(fuse_cfg, "inject_stage4", True) if fuse_cfg is not None else True
 
         # patch_embed (rgb)
         self.patch_embed1 = OverlapPatchEmbed(img_size=img_size, patch_size=7, stride=4, in_chans=self.in_chans[0],
@@ -348,7 +271,10 @@ class RGBXTransformer(nn.Module):
             for i in range(depths[0])])
         self.extra_norm1 = norm_layer(embed_dims[0])
 
-        self.fuse1 = SimpleFusion(c=embed_dims[0])
+        if self.use_caf:
+            self.fuse1 = ConflictAwareFusionBlock(embed_dims[0])
+        else:
+            self.fuse1 = SimpleFusion(c=embed_dims[0])
 
         cur += depths[0]
 
@@ -366,7 +292,10 @@ class RGBXTransformer(nn.Module):
             for i in range(depths[1])])
         self.extra_norm2 = norm_layer(embed_dims[1])
 
-        self.fuse2 = SimpleFusion(c=embed_dims[1])
+        if self.use_caf:
+            self.fuse2 = ConflictAwareFusionBlock(embed_dims[1])
+        else:
+            self.fuse2 = SimpleFusion(c=embed_dims[1])
 
         cur += depths[1]
 
@@ -384,7 +313,10 @@ class RGBXTransformer(nn.Module):
             for i in range(depths[2])])
         self.extra_norm3 = norm_layer(embed_dims[2])
 
-        self.fuse3 = SimpleFusion(c=embed_dims[2])
+        if self.use_caf:
+            self.fuse3 = ConflictAwareFusionBlock(embed_dims[2])
+        else:
+            self.fuse3 = SimpleFusion(c=embed_dims[2])
 
         cur += depths[2]
 
@@ -402,11 +334,40 @@ class RGBXTransformer(nn.Module):
             for i in range(depths[3])])
         self.extra_norm4 = norm_layer(embed_dims[3])
 
-        self.fuse4 = SimpleFusion(c=embed_dims[3])
-        self.semantic_mod4 = SemanticGuidedFeatureModulation(
-            num_classes=num_classes,
-            channels=embed_dims[3]
-        )
+        if self.use_caf:
+            self.fuse4 = ConflictAwareFusionBlock(embed_dims[3])
+        else:
+            self.fuse4 = SimpleFusion(c=embed_dims[3])
+
+        if self.use_safr:
+            self.safr2_rgb = SemanticAwareRefinementBlock(embed_dims[1], num_classes)
+            self.safr2_e = SemanticAwareRefinementBlock(embed_dims[1], num_classes)
+            self.safr3_rgb = SemanticAwareRefinementBlock(embed_dims[2], num_classes)
+            self.safr3_e = SemanticAwareRefinementBlock(embed_dims[2], num_classes)
+            self.safr4_rgb = SemanticAwareRefinementBlock(embed_dims[3], num_classes)
+            self.safr4_e = SemanticAwareRefinementBlock(embed_dims[3], num_classes)
+        else:
+            self.safr2_rgb = None
+            self.safr2_e = None
+            self.safr3_rgb = None
+            self.safr3_e = None
+            self.safr4_rgb = None
+            self.safr4_e = None
+
+        if self.use_vlsp and self.vlsp_inject_stage2:
+            self.vlsp2 = VLSPModule(num_classes=num_classes, channels=embed_dims[1])
+        else:
+            self.vlsp2 = None
+
+        if self.use_vlsp and self.vlsp_inject_stage3:
+            self.vlsp3 = VLSPModule(num_classes=num_classes, channels=embed_dims[2])
+        else:
+            self.vlsp3 = None
+
+        if self.use_vlsp and self.vlsp_inject_stage4:
+            self.vlsp4 = VLSPModule(num_classes=num_classes, channels=embed_dims[3])
+        else:
+            self.vlsp4 = None
 
         self.apply(self._init_weights)
 
@@ -447,7 +408,11 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
 
-        outs_semantic.append(self.fuse1(x_rgb, x_e))
+        if self.use_caf:
+            fused1, _ = self.fuse1(x_rgb, x_e)
+        else:
+            fused1 = self.fuse1(x_rgb, x_e)
+        outs_semantic.append(fused1)
 
 
 
@@ -462,7 +427,21 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm2(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        outs_semantic.append(self.fuse2(x_rgb, x_e))
+        if self.safr2_rgb is not None:
+            x_rgb = self.safr2_rgb(x_rgb, semantic_prior)
+            x_e = self.safr2_e(x_e, semantic_prior)
+
+        if self.use_caf:
+            fused2, conflict2 = self.fuse2(x_rgb, x_e)
+        else:
+            fused2 = self.fuse2(x_rgb, x_e)
+            conflict2 = None
+
+        if self.vlsp2 is not None:
+            if conflict2 is None:
+                conflict2 = compute_conflict_map(x_rgb, x_e)
+            fused2 = self.vlsp2(fused2, semantic_prior=semantic_prior, conflict_map=conflict2)
+        outs_semantic.append(fused2)
 
         # Stage 3
         x_rgb, H, W = self.patch_embed3(x_rgb)
@@ -475,7 +454,21 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm3(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        outs_semantic.append(self.fuse3(x_rgb, x_e))
+        if self.safr3_rgb is not None:
+            x_rgb = self.safr3_rgb(x_rgb, semantic_prior)
+            x_e = self.safr3_e(x_e, semantic_prior)
+
+        if self.use_caf:
+            fused3, conflict3 = self.fuse3(x_rgb, x_e)
+        else:
+            fused3 = self.fuse3(x_rgb, x_e)
+            conflict3 = None
+
+        if self.vlsp3 is not None:
+            if conflict3 is None:
+                conflict3 = compute_conflict_map(x_rgb, x_e)
+            fused3 = self.vlsp3(fused3, semantic_prior=semantic_prior, conflict_map=conflict3)
+        outs_semantic.append(fused3)
 
         # Stage 4
         x_rgb, H, W = self.patch_embed4(x_rgb)
@@ -489,16 +482,20 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         
-        # conflict map between two branches before fusion: [B, 1, H, W]
-        conflict_map = 1.0 - torch.sum(
-            F.normalize(x_rgb, dim=1) * F.normalize(x_e, dim=1),
-            dim=1,
-            keepdim=True
-        )
-        conflict_map = torch.clamp(conflict_map, min=0.0, max=2.0)
+        if self.safr4_rgb is not None:
+            x_rgb = self.safr4_rgb(x_rgb, semantic_prior)
+            x_e = self.safr4_e(x_e, semantic_prior)
 
-        fused4 = self.fuse4(x_rgb, x_e)
-        fused4 = self.semantic_mod4(fused4, semantic_prior=semantic_prior, conflict_map=conflict_map)
+        if self.use_caf:
+            fused4, conflict4 = self.fuse4(x_rgb, x_e)
+        else:
+            fused4 = self.fuse4(x_rgb, x_e)
+            conflict4 = None
+
+        if self.vlsp4 is not None:
+            if conflict4 is None:
+                conflict4 = compute_conflict_map(x_rgb, x_e)
+            fused4 = self.vlsp4(fused4, semantic_prior=semantic_prior, conflict_map=conflict4)
         outs_semantic.append(fused4)
    
         last = outs_semantic[-1]
@@ -578,7 +575,8 @@ class mit_b0(RGBXTransformer):
         super(mit_b0, self).__init__(
             patch_size=4, embed_dims=[32, 64, 160, 256], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[2, 2, 2, 2], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), fuse_cfg=fuse_cfg)
 
 
 class mit_b1(RGBXTransformer):
@@ -586,7 +584,8 @@ class mit_b1(RGBXTransformer):
         super(mit_b1, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[2, 2, 2, 2], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), fuse_cfg=fuse_cfg)
 
 
 class mit_b2(RGBXTransformer):
@@ -594,7 +593,8 @@ class mit_b2(RGBXTransformer):
         super(mit_b2, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), fuse_cfg=fuse_cfg)
 
 
 class mit_b3(RGBXTransformer):
@@ -602,7 +602,8 @@ class mit_b3(RGBXTransformer):
         super(mit_b3, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 4, 18, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), fuse_cfg=fuse_cfg)
 
 
 class mit_b4(RGBXTransformer):
@@ -610,7 +611,8 @@ class mit_b4(RGBXTransformer):
         super(mit_b4, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 8, 27, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=in_chans, num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=in_chans,
+            num_classes=kwargs.get('num_classes', 1000), fuse_cfg=fuse_cfg)
 
 
 class mit_b5(RGBXTransformer):
@@ -618,4 +620,5 @@ class mit_b5(RGBXTransformer):
         super(mit_b5, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 6, 40, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), fuse_cfg=fuse_cfg)
