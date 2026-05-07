@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from skimage import io
+from torch.utils.tensorboard import SummaryWriter
 
 from utils import format_string, convert_from_color, count_sliding_window, grouper, sliding_window, CrossEntropy2d, dice_loss, \
     metrics, convert_to_color
@@ -71,7 +72,7 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
                     dsm_patches = torch.from_numpy(dsm_patches).cuda()
 
                     # Do the inference
-                    outs, _, _, _ = model(image_patches, dsm_patches)
+                    outs, _, _, _, _ = model(image_patches, dsm_patches)
                     outs = outs.data.cpu().numpy()
 
                     # Fill in the results array
@@ -106,11 +107,16 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
             return results
 
 
-def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, weights, results_dir, test_loader=None):
+def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, weights, results_dir, test_loader=None,
+          vlsp_cfg=None):
     weights = weights.cuda()
     epochs = training_cfg.epochs
     save_epoch = training_cfg.save_epoch
     semantic_weight = getattr(training_cfg, "semantic_weight", 0.0)
+    vlsp_enabled = bool(getattr(vlsp_cfg, "ENABLE", False))
+    rgb_weight = getattr(vlsp_cfg, "RGB_LOSS_WEIGHT", 0.0)
+    dsm_weight = getattr(vlsp_cfg, "DSM_LOSS_WEIGHT", 0.0)
+    reg_weight = getattr(vlsp_cfg, "REG_LOSS_WEIGHT", 0.0)
 
     history = {
         'round': [],
@@ -128,6 +134,9 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
 
     MIoU_best = 0.0
     epoch_best = -1
+    writer = SummaryWriter(log_dir=os.path.join(results_dir, "tensorboard"))
+    global_step = 0
+
     for epoch in range(1, epochs + 1):
         logger.info('Train (epoch {}/{})'.format(epoch, epochs))
         model.train()
@@ -140,11 +149,13 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             opt, dsm, target = opt.cuda(), dsm.cuda(), target.cuda()
             optimizer.zero_grad()
 
-            output, L_cons, low_L_cons, semantic_prior = model(opt, dsm)
+            output, L_cons, low_L_cons, semantic_prior, vlsp_losses = model(opt, dsm, mask=target)
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
             
-            loss = loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta) + (loss_dice * training_cfg.gamma)
+            loss_seg = loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta) + (
+                loss_dice * training_cfg.gamma)
+            loss = loss_seg
             if semantic_prior is not None and semantic_weight > 0:
                 log_probs = F.log_softmax(output, dim=1)
                 num_pixels = output.shape[2] * output.shape[3]
@@ -157,6 +168,14 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
                 # KL divergence between predicted class distribution and CLIP semantic prior.
                 loss_sem = F.kl_div(pred_log, target_prior, reduction="batchmean", log_target=False)
                 loss = loss + semantic_weight * loss_sem
+
+            loss_rgb = vlsp_losses["loss_rgb"]
+            loss_dsm = vlsp_losses["loss_dsm"]
+            loss_reg = vlsp_losses["loss_reg"]
+
+            if vlsp_enabled:
+                loss = loss + (rgb_weight * loss_rgb) + (dsm_weight * loss_dsm) + (reg_weight * loss_reg)
+
             loss.backward()
             optimizer.step()
 
@@ -167,6 +186,12 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             if (batch_idx + 1) % print_interval == 0 or (batch_idx + 1) == total_iter:
                 print(f"Iter {batch_idx+1}/{total_iter} | Loss: {loss.item():.4f}")
             del (opt, target, loss)
+
+            writer.add_scalar("loss/segmentation", loss_seg.item(), global_step)
+            writer.add_scalar("loss/vlsp_rgb", loss_rgb.item(), global_step)
+            writer.add_scalar("loss/vlsp_dsm", loss_dsm.item(), global_step)
+            writer.add_scalar("loss/vlsp_reg", loss_reg.item(), global_step)
+            global_step += 1
 
         epoch_loss = np.mean(batch_losses)
 
@@ -240,6 +265,7 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
         torch.save(model.state_dict(), os.path.join(results_dir, 'final_model_potsdam'))
 
     logger.info('End of training !')
+    writer.close()
 
 
 def visualize_testloader(model, test_loader, palette, save_root):
@@ -250,7 +276,7 @@ def visualize_testloader(model, test_loader, palette, save_root):
     with torch.no_grad():
         for img, dsm, _ in test_loader:
             img, dsm = img.cuda(), dsm.cuda()
-            pred, _, _, _ = model(img, dsm)
+            pred, _, _, _, _ = model(img, dsm)
             pred = pred.data.cpu().numpy()
             pred = np.argmax(pred, axis=1)
             for i in range(pred.shape[0]):

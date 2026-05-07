@@ -358,9 +358,17 @@ class RGBXTransformer(nn.Module):
         else:
             raise TypeError('pretrained must be a str or None')
 
-    def forward_features(self, x_rgb, x_e):
+    def forward_features(self, x_rgb, x_e, return_modal_features: bool = False, align_stage=None):
         B = x_rgb.shape[0]
         outs_semantic = []
+        modal_features = None
+
+        def maybe_capture(stage_name: str, rgb_feat: torch.Tensor, dsm_feat: torch.Tensor):
+            nonlocal modal_features
+            if not return_modal_features:
+                return
+            if align_stage is None or align_stage == stage_name:
+                modal_features = (rgb_feat, dsm_feat)
 
         # Stage 1
         x_rgb, H, W = self.patch_embed1(x_rgb)
@@ -374,6 +382,7 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
 
+        maybe_capture("stage1", x_rgb, x_e)
         outs_semantic.append(self.fuse1(x_rgb, x_e))
 
 
@@ -389,6 +398,7 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm2(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        maybe_capture("stage2", x_rgb, x_e)
         outs_semantic.append(self.fuse2(x_rgb, x_e))
 
         # Stage 3
@@ -402,6 +412,7 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm3(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        maybe_capture("stage3", x_rgb, x_e)
         outs_semantic.append(self.fuse3(x_rgb, x_e))
 
         # Stage 4
@@ -416,6 +427,7 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         
+        maybe_capture("stage4", x_rgb, x_e)
         outs_semantic.append(self.fuse4(x_rgb, x_e))
    
         last = outs_semantic[-1]
@@ -425,11 +437,17 @@ class RGBXTransformer(nn.Module):
 
         L_cons = last.new_zeros(1)
         low_L_cons = last.new_zeros(1)
+        if return_modal_features:
+            return outs_semantic, L_cons, low_L_cons, modal_features
         return outs_semantic, L_cons, low_L_cons
 
-    def forward(self, x_rgb, x_e):
+    def forward(self, x_rgb, x_e, return_modal_features: bool = False, align_stage=None):
+        if return_modal_features:
+            out_semantic, L_cons, low_L_cons, modal_features = self.forward_features(
+                x_rgb, x_e, return_modal_features=True, align_stage=align_stage
+            )
+            return out_semantic, L_cons, low_L_cons, modal_features
         out_semantic, L_cons, low_L_cons = self.forward_features(x_rgb, x_e)
-        
         return out_semantic, L_cons, low_L_cons
 
 
