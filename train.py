@@ -175,10 +175,10 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             loss_dsm = vlsp_losses["loss_dsm"]
             loss_reg = vlsp_losses["loss_reg"]
             if not use_dense_alignment:
-                loss_rgb = loss_rgb.detach() * 0.0
-                loss_dsm = loss_dsm.detach() * 0.0
+                loss_rgb = output.new_zeros(())
+                loss_dsm = output.new_zeros(())
             if not use_regularization:
-                loss_reg = loss_reg.detach() * 0.0
+                loss_reg = output.new_zeros(())
 
             if vlsp_enabled:
                 loss = loss + (rgb_weight * loss_rgb) + (dsm_weight * loss_dsm) + (reg_weight * loss_reg)
