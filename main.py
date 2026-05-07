@@ -47,10 +47,23 @@ def main(cfg: DictConfig):
     test_ids = dataset_cfg.test_ids
 
     model_cfg = cfg.model
+    vlsp_cfg = getattr(cfg, "VLSP", None)
     if cfg.training_dataset == 'Potsdam':
-        model = Baseline(cfg=model_cfg, num_classes=N_CLASSES, in_chans=[4, 1], class_labels=dataset_cfg.labels)
+        model = Baseline(
+            cfg=model_cfg,
+            num_classes=N_CLASSES,
+            in_chans=[4, 1],
+            class_labels=dataset_cfg.labels,
+            vlsp_cfg=vlsp_cfg,
+        )
     elif cfg.training_dataset == 'Vaihingen':
-        model = Baseline(cfg=model_cfg, num_classes=N_CLASSES, in_chans=[3, 1], class_labels=dataset_cfg.labels)
+        model = Baseline(
+            cfg=model_cfg,
+            num_classes=N_CLASSES,
+            in_chans=[3, 1],
+            class_labels=dataset_cfg.labels,
+            vlsp_cfg=vlsp_cfg,
+        )
 
     model = model.cuda()
     model = nn.DataParallel(model)
@@ -130,9 +143,10 @@ def main(cfg: DictConfig):
     logger.info('Start training...')
     if cfg.training_dataset == 'WHU' or cfg.training_dataset == 'YESeg':
         train(dataset_cfg, cfg.training, model, optimizer, scheduler, train_loader, WEIGHTS, results_dir,
-              test_loader=test_loader)
+              test_loader=test_loader, vlsp_cfg=vlsp_cfg)
     else:
-        train(dataset_cfg, cfg.training, model, optimizer, scheduler, train_loader, WEIGHTS, results_dir)
+        train(dataset_cfg, cfg.training, model, optimizer, scheduler, train_loader, WEIGHTS, results_dir,
+              vlsp_cfg=vlsp_cfg)
     end_train = time.time()
     logger.info('Training time: {:.2f} hours'.format((end_train - start_train) / 3600))
     logger.info("")

@@ -32,6 +32,19 @@ model:
     pretrained: "openai"
     image_size: 224
 
+VLSP:
+  ENABLE: true
+  USE_MODALITY_PROJECTION: true
+  USE_DENSE_ALIGNMENT: true
+  USE_SHARED_PROTOTYPE: false
+  USE_ADAPTIVE_PROTOTYPE: false
+  USE_REGULARIZATION: true
+  RGB_LOSS_WEIGHT: 0.1
+  DSM_LOSS_WEIGHT: 0.1
+  REG_LOSS_WEIGHT: 0.001
+  IGNORE_BACKGROUND_ALIGNMENT: true
+  ALIGN_STAGE: "stage4"
+
 training:
   epochs: 100
   save_epoch: 1
