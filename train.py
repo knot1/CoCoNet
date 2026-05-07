@@ -113,12 +113,10 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
     epochs = training_cfg.epochs
     save_epoch = training_cfg.save_epoch
     semantic_weight = getattr(training_cfg, "semantic_weight", 0.0)
-    vlsp_enabled = vlsp_cfg is not None and getattr(vlsp_cfg, "ENABLE", False)
-    use_dense_alignment = getattr(vlsp_cfg, "USE_DENSE_ALIGNMENT", False) if vlsp_enabled else False
-    use_regularization = getattr(vlsp_cfg, "USE_REGULARIZATION", False) if vlsp_enabled else False
-    rgb_weight = getattr(vlsp_cfg, "RGB_LOSS_WEIGHT", 0.0) if vlsp_enabled else 0.0
-    dsm_weight = getattr(vlsp_cfg, "DSM_LOSS_WEIGHT", 0.0) if vlsp_enabled else 0.0
-    reg_weight = getattr(vlsp_cfg, "REG_LOSS_WEIGHT", 0.0) if vlsp_enabled else 0.0
+    vlsp_enabled = bool(getattr(vlsp_cfg, "ENABLE", False))
+    rgb_weight = getattr(vlsp_cfg, "RGB_LOSS_WEIGHT", 0.0)
+    dsm_weight = getattr(vlsp_cfg, "DSM_LOSS_WEIGHT", 0.0)
+    reg_weight = getattr(vlsp_cfg, "REG_LOSS_WEIGHT", 0.0)
 
     history = {
         'round': [],
@@ -174,11 +172,6 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             loss_rgb = vlsp_losses["loss_rgb"]
             loss_dsm = vlsp_losses["loss_dsm"]
             loss_reg = vlsp_losses["loss_reg"]
-            if not use_dense_alignment:
-                loss_rgb = output.new_zeros(())
-                loss_dsm = output.new_zeros(())
-            if not use_regularization:
-                loss_reg = output.new_zeros(())
 
             if vlsp_enabled:
                 loss = loss + (rgb_weight * loss_rgb) + (dsm_weight * loss_dsm) + (reg_weight * loss_reg)

@@ -1,21 +1,12 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import open_clip
-
-import torch
-import torch.nn as nn
-import torch_dct as DCT
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch_dct as DCT
-import os
-
+import open_clip
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import torch_dct as DCT
-import matplotlib.pyplot as plt
-import os
 
 from losses.dense_proto_loss import dense_proto_alignment_loss
 from .modules import ModalitySemanticProjector
