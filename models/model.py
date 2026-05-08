@@ -199,42 +199,45 @@ class Baseline(nn.Module):
             outputs.append(base_feat)
         return outputs
 
+    def _zero_loss(self, modal_features=None, fallback=None):
+        if fallback is not None:
+            return fallback.new_zeros(1)
+        if modal_features:
+            sample = next(iter(modal_features.values()))
+            return sample.new_zeros(1)
+        return torch.tensor(0.0, device="cpu")
+
     def _compute_cca_loss(self, fused_feat, modal_features):
         if self.cca_loss is None:
-            if fused_feat is None:
-                if modal_features:
-                    sample = next(iter(modal_features.values()))
-                    return sample.new_zeros(1)
-                return torch.tensor(0.0, device="cpu")
-            return fused_feat.new_zeros(1)
+            return self._zero_loss(modal_features=modal_features, fallback=fused_feat)
         if modal_features is None:
-            return fused_feat.new_zeros(1)
+            return self._zero_loss(fallback=fused_feat)
 
         rgb_feat = modal_features.get("rgb")
         extra_feat = modal_features.get("extra")
         if rgb_feat is None or extra_feat is None:
-            return fused_feat.new_zeros(1)
+            return self._zero_loss(fallback=fused_feat)
 
         if self.cca_position == "pre_fusion":
             return self.cca_loss(rgb_feat, extra_feat)
 
         if self.cca_position == "post_fusion":
             if fused_feat is None:
-                return rgb_feat.new_zeros(1)
+                return self._zero_loss(fallback=rgb_feat)
             loss_rgb = self.cca_loss(rgb_feat, fused_feat)
             loss_extra = self.cca_loss(extra_feat, fused_feat)
             return 0.5 * (loss_rgb + loss_extra)
 
-        return fused_feat.new_zeros(1)
+        return self._zero_loss(fallback=fused_feat)
 
-    def encode_decode(self, rgb, modal_x, semantic_prior=None):
+    def encode_decode(self, rgb, modal_x, vlsp_prior=None):
         ori_size = rgb.shape
         x_semantic, L_cons, low_L_cons, modal_features = self.backbone(
             rgb,
             modal_x,
             semantic_prior=None
         )
-        x_semantic = self._apply_stage_modules(x_semantic, semantic_prior=semantic_prior)
+        x_semantic = self._apply_stage_modules(x_semantic, semantic_prior=vlsp_prior)
         fused_feat = x_semantic[-1] if x_semantic else None
         cca_loss = self._compute_cca_loss(fused_feat, modal_features)
 
@@ -254,7 +257,7 @@ class Baseline(nn.Module):
         outputs, L_cons, low_L_cons, cca_loss = self.encode_decode(
             rgb,
             modal_x,
-            semantic_prior=semantic_prior
+            vlsp_prior=semantic_prior
         )
 
         return outputs, L_cons, low_L_cons, semantic_prior, cca_loss
