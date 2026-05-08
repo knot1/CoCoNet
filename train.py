@@ -71,7 +71,7 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
                     dsm_patches = torch.from_numpy(dsm_patches).cuda()
 
                     # Do the inference
-                    outs, _, _, _ = model(image_patches, dsm_patches)
+                    outs, _, _, _, _ = model(image_patches, dsm_patches)
                     outs = outs.data.cpu().numpy()
 
                     # Fill in the results array
@@ -140,11 +140,16 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             opt, dsm, target = opt.cuda(), dsm.cuda(), target.cuda()
             optimizer.zero_grad()
 
-            output, L_cons, low_L_cons, semantic_prior = model(opt, dsm)
+            output, L_cons, low_L_cons, semantic_prior, cca_loss = model(opt, dsm)
+            if torch.is_tensor(cca_loss):
+                cca_loss = cca_loss.mean()
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
             
             loss = loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta) + (loss_dice * training_cfg.gamma)
+            cca_weight = getattr(getattr(model, "module", model), "cca_weight", 0.0)
+            if cca_loss is not None and cca_weight > 0:
+                loss = loss + cca_weight * cca_loss
             if semantic_prior is not None and semantic_weight > 0:
                 log_probs = F.log_softmax(output, dim=1)
                 num_pixels = output.shape[2] * output.shape[3]
@@ -250,7 +255,7 @@ def visualize_testloader(model, test_loader, palette, save_root):
     with torch.no_grad():
         for img, dsm, _ in test_loader:
             img, dsm = img.cuda(), dsm.cuda()
-            pred, _, _, _ = model(img, dsm)
+            pred, _, _, _, _ = model(img, dsm)
             pred = pred.data.cpu().numpy()
             pred = np.argmax(pred, axis=1)
             for i in range(pred.shape[0]):

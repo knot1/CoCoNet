@@ -500,6 +500,11 @@ class RGBXTransformer(nn.Module):
         fused4 = self.fuse4(x_rgb, x_e)
         fused4 = self.semantic_mod4(fused4, semantic_prior=semantic_prior, conflict_map=conflict_map)
         outs_semantic.append(fused4)
+        modal_features = {
+            "rgb": x_rgb,
+            "extra": x_e,
+            "fused": fused4,
+        }
    
         last = outs_semantic[-1]
         if isinstance(last, (tuple, list)):
@@ -508,16 +513,16 @@ class RGBXTransformer(nn.Module):
 
         L_cons = last.new_zeros(1)
         low_L_cons = last.new_zeros(1)
-        return outs_semantic, L_cons, low_L_cons
+        return outs_semantic, L_cons, low_L_cons, modal_features
 
     def forward(self, x_rgb, x_e, semantic_prior=None):
-        out_semantic, L_cons, low_L_cons = self.forward_features(
+        out_semantic, L_cons, low_L_cons, modal_features = self.forward_features(
             x_rgb,
             x_e,
             semantic_prior=semantic_prior
         )
         
-        return out_semantic, L_cons, low_L_cons
+        return out_semantic, L_cons, low_L_cons, modal_features
 
 
 def load_dualpath_model(model, model_file, in_chans):
