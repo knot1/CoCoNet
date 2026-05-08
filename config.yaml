@@ -39,7 +39,7 @@ model:
   fdr:
     enable: true
     stages: [2, 3, 4]
-    mode: "wavelet"     # Options: fft, wavelet, both
+    mode: "wavelet"     # Options: fft, wavelet, both (wavelet requires pytorch_wavelets)
 
   cca:
     enable: true

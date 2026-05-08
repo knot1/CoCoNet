@@ -498,7 +498,8 @@ class RGBXTransformer(nn.Module):
         conflict_map = torch.clamp(conflict_map, min=0.0, max=2.0)
 
         fused4 = self.fuse4(x_rgb, x_e)
-        fused4 = self.semantic_mod4(fused4, semantic_prior=semantic_prior, conflict_map=conflict_map)
+        if getattr(self, "apply_semantic_modulation", True):
+            fused4 = self.semantic_mod4(fused4, semantic_prior=semantic_prior, conflict_map=conflict_map)
         outs_semantic.append(fused4)
         modal_features = {
             "rgb": x_rgb,

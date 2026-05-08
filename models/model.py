@@ -101,9 +101,7 @@ class Baseline(nn.Module):
             from .encoder import mit_b4 as backbone
             self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
 
-        if hasattr(self.backbone, "semantic_mod4") and isinstance(self.backbone.semantic_mod4, nn.Module):
-            # Disable internal semantic modulation so VLSP can be controlled via config.
-            self.backbone.semantic_mod4 = nn.Identity()
+        self.backbone.apply_semantic_modulation = False
 
         from .Seg_head import DecoderHead
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
@@ -185,12 +183,11 @@ class Baseline(nn.Module):
         outputs = []
         for idx, feat in enumerate(features, start=1):
             stage_key = str(idx)
-            base_feat = feat[0] if isinstance(feat, (tuple, list)) else feat
             if stage_key in self.vlsp_modules:
-                base_feat = self.vlsp_modules[stage_key](base_feat, semantic_prior=semantic_prior)
+                feat = self.vlsp_modules[stage_key](feat, semantic_prior=semantic_prior)
             if stage_key in self.fdr_modules:
-                base_feat = self.fdr_modules[stage_key](base_feat)
-            outputs.append(base_feat)
+                feat = self.fdr_modules[stage_key](feat)
+            outputs.append(feat)
         return outputs
 
     def _zero_loss(self, modal_features=None, fallback=None):
