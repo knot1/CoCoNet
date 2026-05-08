@@ -31,6 +31,21 @@ model:
     model_name: "ViT-B-32"
     pretrained: "openai"
     image_size: 224
+  vlsp:
+    enable: true
+    stages: [3, 4]
+    type: "clip_text_guided_modulation"
+
+  fdr:
+    enable: true
+    stages: [2, 3, 4]
+    mode: "wavelet"     # Options: fft, wavelet, both (wavelet requires pytorch_wavelets)
+
+  cca:
+    enable: true
+    position: "post_fusion"
+    loss_weight: 1.0
+    loss_type: "cosine"
 
 training:
   epochs: 100

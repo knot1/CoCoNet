@@ -1,20 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import torch
-import torch.nn as nn
 import torch_dct as DCT
-
 import matplotlib.pyplot as plt
 import numpy as np
-import torch_dct as DCT
-import os
 
-import torch
-import torch_dct as DCT
-import matplotlib.pyplot as plt
-import os
+from .cca_loss import CCALoss
+from .fdr_module import FDRModule
+from .vlsp_module import VLSPModule
 
 def denormalize_dsm(x):
     mean = torch.tensor([0.5]).view(1,1,1,1).to(x.device)
@@ -108,6 +101,8 @@ class Baseline(nn.Module):
             from .encoder import mit_b4 as backbone
             self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
 
+        self.backbone.apply_semantic_modulation = False
+
         from .Seg_head import DecoderHead
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
                                        embed_dim=cfg.decoder_embed_dim)
@@ -125,6 +120,39 @@ class Baseline(nn.Module):
                 image_size=prompt_cfg.image_size,
             )
 
+        self.vlsp_modules = nn.ModuleDict()
+        self.fdr_modules = nn.ModuleDict()
+        self.cca_loss = None
+        self.cca_weight = 0.0
+        self.cca_position = None
+
+        vlsp_cfg = getattr(cfg, "vlsp", None)
+        if vlsp_cfg is not None and getattr(vlsp_cfg, "enable", False):
+            vlsp_stages = self._normalize_stages(getattr(vlsp_cfg, "stages", []))
+            vlsp_type = getattr(vlsp_cfg, "type", "clip_text_guided_modulation")
+            for stage in vlsp_stages:
+                self.vlsp_modules[str(stage)] = VLSPModule(
+                    num_classes=num_classes,
+                    channels=self.channels[stage - 1],
+                    module_type=vlsp_type,
+                )
+
+        fdr_cfg = getattr(cfg, "fdr", None)
+        if fdr_cfg is not None and getattr(fdr_cfg, "enable", False):
+            fdr_stages = self._normalize_stages(getattr(fdr_cfg, "stages", []))
+            fdr_mode = getattr(fdr_cfg, "mode", "fft")
+            for stage in fdr_stages:
+                self.fdr_modules[str(stage)] = FDRModule(
+                    dim=self.channels[stage - 1],
+                    mode=fdr_mode,
+                )
+
+        cca_cfg = getattr(cfg, "cca", None)
+        if cca_cfg is not None and getattr(cca_cfg, "enable", False):
+            self.cca_loss = CCALoss(loss_type=getattr(cca_cfg, "loss_type", "cosine"))
+            self.cca_weight = float(getattr(cca_cfg, "loss_weight", 1.0))
+            self.cca_position = getattr(cca_cfg, "position", "post_fusion")
+
         self.init_weights(cfg, pretrained=cfg.pretrained_backbone)
 
 
@@ -135,18 +163,80 @@ class Baseline(nn.Module):
                     self.norm_layer, cfg.bn_eps, cfg.bn_momentum,
                     mode='fan_in', nonlinearity='relu')
 
+    def _normalize_stages(self, stages):
+        stage_set = set()
+        if stages is None:
+            return []
+        for stage in stages:
+            try:
+                idx = int(stage)
+            except (TypeError, ValueError):
+                raise ValueError(f"Stage value must be an integer, got {stage!r}")
+            if not 1 <= idx <= len(self.channels):
+                raise ValueError(f"Stage {idx} out of valid range 1..{len(self.channels)}")
+            stage_set.add(idx)
+        return sorted(stage_set)
+
+    def _apply_stage_modules(self, features, semantic_prior=None):
+        if not self.vlsp_modules and not self.fdr_modules:
+            return features
+        outputs = []
+        for idx, feat in enumerate(features, start=1):
+            stage_key = str(idx)
+            if stage_key in self.vlsp_modules:
+                feat = self.vlsp_modules[stage_key](feat, semantic_prior=semantic_prior)
+            if stage_key in self.fdr_modules:
+                feat = self.fdr_modules[stage_key](feat)
+            outputs.append(feat)
+        return outputs
+
+    def _zero_loss(self, modal_features=None, fallback=None):
+        if fallback is not None:
+            return fallback.new_zeros(1)
+        if isinstance(modal_features, dict) and modal_features:
+            sample = next(iter(modal_features.values()))
+            return sample.new_zeros(1)
+        device = next(self.parameters()).device
+        return torch.tensor(0.0, device=device)
+
+    def _compute_cca_loss(self, fused_feat, modal_features):
+        if self.cca_loss is None:
+            return self._zero_loss(modal_features=modal_features, fallback=fused_feat)
+        if modal_features is None:
+            return self._zero_loss(fallback=fused_feat)
+
+        rgb_feat = modal_features.get("rgb")
+        dsm_feat = modal_features.get("dsm")
+        if rgb_feat is None or dsm_feat is None:
+            return self._zero_loss(fallback=fused_feat)
+
+        if self.cca_position == "pre_fusion":
+            return self.cca_loss(rgb_feat, dsm_feat)
+
+        if self.cca_position == "post_fusion":
+            if fused_feat is None:
+                return self._zero_loss(fallback=rgb_feat)
+            loss_rgb = self.cca_loss(rgb_feat, fused_feat)
+            loss_dsm = self.cca_loss(dsm_feat, fused_feat)
+            return 0.5 * (loss_rgb + loss_dsm)
+
+        return self._zero_loss(fallback=fused_feat)
+
     def encode_decode(self, rgb, modal_x, semantic_prior=None):
         ori_size = rgb.shape
-        x_semantic, L_cons, low_L_cons = self.backbone(
+        x_semantic, L_cons, low_L_cons, modal_features = self.backbone(
             rgb,
             modal_x,
             semantic_prior=semantic_prior
         )
+        x_semantic = self._apply_stage_modules(x_semantic, semantic_prior=semantic_prior)
+        fused_feat = x_semantic[-1] if x_semantic else None
+        cca_loss = self._compute_cca_loss(fused_feat, modal_features)
 
         out_semantic = self.decode_head.forward(x_semantic)
         out_semantic = F.interpolate(out_semantic, size=ori_size[2:], mode='bilinear', align_corners=False)
 
-        return out_semantic, L_cons, low_L_cons
+        return out_semantic, L_cons, low_L_cons, cca_loss
 
     def forward(self, rgb, modal_x):
         if modal_x.ndim == 3:
@@ -156,10 +246,10 @@ class Baseline(nn.Module):
         if isinstance(semantic_prior, (tuple, list)):
             semantic_prior = semantic_prior[0]
 
-        outputs, L_cons, low_L_cons = self.encode_decode(
+        outputs, L_cons, low_L_cons, cca_loss = self.encode_decode(
             rgb,
             modal_x,
             semantic_prior=semantic_prior
         )
 
-        return outputs, L_cons, low_L_cons, semantic_prior
+        return outputs, L_cons, low_L_cons, semantic_prior, cca_loss
