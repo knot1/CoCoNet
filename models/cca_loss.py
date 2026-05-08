@@ -18,7 +18,8 @@ class CCALoss(nn.Module):
                 return feat_a.new_zeros(1)
             if feat_b is not None:
                 return feat_b.new_zeros(1)
-            return torch.tensor(0.0)
+            device = feat_a.device if feat_a is not None else feat_b.device if feat_b is not None else "cpu"
+            return torch.tensor(0.0, device=device)
 
         vec_a = self._pool(feat_a)
         vec_b = self._pool(feat_b)

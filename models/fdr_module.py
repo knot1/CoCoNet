@@ -14,7 +14,14 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
 
 
 class FDRModule(nn.Module):
-    def __init__(self, dim: int, mode: str = "fft", wave: str = "haar", levels: int = 1):
+    def __init__(
+        self,
+        dim: int,
+        mode: str = "fft",
+        wave: str = "haar",
+        levels: int = 1,
+        gamma_init: float = 0.1,
+    ):
         super().__init__()
         self.mode = mode.lower()
         self.use_fft = self.mode in ("fft", "both")
@@ -31,7 +38,7 @@ class FDRModule(nn.Module):
             self.idwt = DWTInverse(wave=wave, mode="zero")
             self.wavelet_fuse = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
 
-        self.gamma = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
+        self.gamma = nn.Parameter(torch.tensor(gamma_init, dtype=torch.float32))
 
     def _fft_freq(self, x: torch.Tensor) -> torch.Tensor:
         high, low = self.fft_module(x)

@@ -9,6 +9,7 @@ class VLSPModule(nn.Module):
         channels: int,
         module_type: str = "clip_text_guided_modulation",
         reduction: int = 4,
+        gamma_init: float = 0.1,
     ):
         super().__init__()
         self.module_type = module_type
@@ -19,7 +20,7 @@ class VLSPModule(nn.Module):
             nn.Linear(hidden_dim, channels),
             nn.Sigmoid(),
         )
-        self.gamma = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
+        self.gamma = nn.Parameter(torch.tensor(gamma_init, dtype=torch.float32))
 
     def forward(self, feat: torch.Tensor, semantic_prior=None) -> torch.Tensor:
         if semantic_prior is None or semantic_prior.dim() != 2:

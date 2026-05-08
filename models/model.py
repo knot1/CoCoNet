@@ -1,24 +1,15 @@
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch_dct as DCT
 
 from .cca_loss import CCALoss
 from .fdr_module import FDRModule
 from .vlsp_module import VLSPModule
-
-import torch
-import torch.nn as nn
-import torch_dct as DCT
-
-import matplotlib.pyplot as plt
-import numpy as np
-import torch_dct as DCT
-import os
-
-import torch
-import torch_dct as DCT
-import matplotlib.pyplot as plt
-import os
 
 def denormalize_dsm(x):
     mean = torch.tensor([0.5]).view(1,1,1,1).to(x.device)
@@ -111,6 +102,9 @@ class Baseline(nn.Module):
         else:
             from .encoder import mit_b4 as backbone
             self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
+
+        if hasattr(self.backbone, "semantic_mod4"):
+            self.backbone.semantic_mod4 = nn.Identity()
 
         from .Seg_head import DecoderHead
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
@@ -235,7 +229,7 @@ class Baseline(nn.Module):
         x_semantic, L_cons, low_L_cons, modal_features = self.backbone(
             rgb,
             modal_x,
-            semantic_prior=None
+            semantic_prior=vlsp_prior
         )
         x_semantic = self._apply_stage_modules(x_semantic, semantic_prior=vlsp_prior)
         fused_feat = x_semantic[-1] if x_semantic else None
