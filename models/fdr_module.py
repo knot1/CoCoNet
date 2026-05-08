@@ -24,6 +24,9 @@ class FDRModule(nn.Module):
     ):
         super().__init__()
         self.mode = mode.lower()
+        valid_modes = {"fft", "wavelet", "both"}
+        if self.mode not in valid_modes:
+            raise ValueError(f"Unsupported FDR mode: {mode}. Options: fft, wavelet, both.")
         self.use_fft = self.mode in ("fft", "both")
         self.use_wavelet = self.mode in ("wavelet", "both")
 

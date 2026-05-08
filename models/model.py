@@ -101,7 +101,7 @@ class Baseline(nn.Module):
             from .encoder import mit_b4 as backbone
             self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
 
-        if hasattr(self.backbone, "semantic_mod4"):
+        if hasattr(self.backbone, "semantic_mod4") and isinstance(self.backbone.semantic_mod4, nn.Module):
             # Disable internal semantic modulation so VLSP can be controlled via config.
             self.backbone.semantic_mod4 = nn.Identity()
 
@@ -173,9 +173,10 @@ class Baseline(nn.Module):
             try:
                 idx = int(stage)
             except (TypeError, ValueError):
-                continue
-            if 1 <= idx <= len(self.channels):
-                stage_set.add(idx)
+                raise ValueError(f"Stage value must be an integer, got {stage!r}")
+            if not 1 <= idx <= len(self.channels):
+                raise ValueError(f"Stage {idx} out of valid range 1..{len(self.channels)}")
+            stage_set.add(idx)
         return sorted(stage_set)
 
     def _apply_stage_modules(self, features, semantic_prior=None):
@@ -208,19 +209,19 @@ class Baseline(nn.Module):
             return self._zero_loss(fallback=fused_feat)
 
         rgb_feat = modal_features.get("rgb")
-        extra_feat = modal_features.get("extra")
-        if rgb_feat is None or extra_feat is None:
+        dsm_feat = modal_features.get("dsm")
+        if rgb_feat is None or dsm_feat is None:
             return self._zero_loss(fallback=fused_feat)
 
         if self.cca_position == "pre_fusion":
-            return self.cca_loss(rgb_feat, extra_feat)
+            return self.cca_loss(rgb_feat, dsm_feat)
 
         if self.cca_position == "post_fusion":
             if fused_feat is None:
                 return self._zero_loss(fallback=rgb_feat)
             loss_rgb = self.cca_loss(rgb_feat, fused_feat)
-            loss_extra = self.cca_loss(extra_feat, fused_feat)
-            return 0.5 * (loss_rgb + loss_extra)
+            loss_dsm = self.cca_loss(dsm_feat, fused_feat)
+            return 0.5 * (loss_rgb + loss_dsm)
 
         return self._zero_loss(fallback=fused_feat)
 

@@ -502,7 +502,7 @@ class RGBXTransformer(nn.Module):
         outs_semantic.append(fused4)
         modal_features = {
             "rgb": x_rgb,
-            "extra": x_e,
+            "dsm": x_e,
             "fused": fused4,
         }
    

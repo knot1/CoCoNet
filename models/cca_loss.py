@@ -15,7 +15,7 @@ class CCALoss(nn.Module):
     def forward(self, feat_a: torch.Tensor, feat_b: torch.Tensor) -> torch.Tensor:
         if feat_a is None or feat_b is None:
             if feat_a is None and feat_b is None:
-                return torch.tensor(0.0, device="cpu")
+                raise ValueError("CCA loss requires both feature tensors.")
             ref = feat_a if feat_a is not None else feat_b
             return ref.new_zeros(1)
 

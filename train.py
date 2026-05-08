@@ -141,7 +141,7 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             optimizer.zero_grad()
 
             output, L_cons, low_L_cons, semantic_prior, cca_loss = model(opt, dsm)
-            if torch.is_tensor(cca_loss) and cca_loss.numel() > 1:
+            if torch.is_tensor(cca_loss):
                 cca_loss = cca_loss.mean()
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
