@@ -8,7 +8,7 @@ from .frequency_modules import FrequencyModule
 
 try:
     from pytorch_wavelets import DWTForward, DWTInverse
-except ImportError:  # pragma: no cover - optional dependency at runtime
+except ImportError:  # pragma: no cover (optional dependency at runtime)
     DWTForward = None
     DWTInverse = None
 

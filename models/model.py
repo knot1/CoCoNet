@@ -1,5 +1,3 @@
-import os
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -104,6 +102,7 @@ class Baseline(nn.Module):
             self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
 
         if hasattr(self.backbone, "semantic_mod4"):
+            # Disable internal semantic modulation so VLSP can be controlled via config.
             self.backbone.semantic_mod4 = nn.Identity()
 
         from .Seg_head import DecoderHead
@@ -199,7 +198,8 @@ class Baseline(nn.Module):
         if isinstance(modal_features, dict) and modal_features:
             sample = next(iter(modal_features.values()))
             return sample.new_zeros(1)
-        return torch.tensor(0.0, device="cpu")
+        device = next(self.parameters()).device
+        return torch.tensor(0.0, device=device)
 
     def _compute_cca_loss(self, fused_feat, modal_features):
         if self.cca_loss is None:
