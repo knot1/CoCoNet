@@ -147,7 +147,8 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             loss_dice = dice_loss(output, target)
             
             loss = loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta) + (loss_dice * training_cfg.gamma)
-            cca_weight = getattr(getattr(model, "module", model), "cca_weight", 0.0)
+            model_obj = getattr(model, "module", model)
+            cca_weight = getattr(model_obj, "cca_weight", 0.0)
             if cca_loss is not None and cca_weight > 0:
                 loss = loss + cca_weight * cca_loss
             if semantic_prior is not None and semantic_weight > 0:

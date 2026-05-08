@@ -1,11 +1,11 @@
 import os
 
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_dct as DCT
+import matplotlib.pyplot as plt
+import numpy as np
 
 from .cca_loss import CCALoss
 from .fdr_module import FDRModule
@@ -196,7 +196,7 @@ class Baseline(nn.Module):
     def _zero_loss(self, modal_features=None, fallback=None):
         if fallback is not None:
             return fallback.new_zeros(1)
-        if modal_features:
+        if isinstance(modal_features, dict) and modal_features:
             sample = next(iter(modal_features.values()))
             return sample.new_zeros(1)
         return torch.tensor(0.0, device="cpu")
@@ -224,14 +224,14 @@ class Baseline(nn.Module):
 
         return self._zero_loss(fallback=fused_feat)
 
-    def encode_decode(self, rgb, modal_x, vlsp_prior=None):
+    def encode_decode(self, rgb, modal_x, semantic_prior=None):
         ori_size = rgb.shape
         x_semantic, L_cons, low_L_cons, modal_features = self.backbone(
             rgb,
             modal_x,
-            semantic_prior=vlsp_prior
+            semantic_prior=semantic_prior
         )
-        x_semantic = self._apply_stage_modules(x_semantic, semantic_prior=vlsp_prior)
+        x_semantic = self._apply_stage_modules(x_semantic, semantic_prior=semantic_prior)
         fused_feat = x_semantic[-1] if x_semantic else None
         cca_loss = self._compute_cca_loss(fused_feat, modal_features)
 
@@ -251,7 +251,7 @@ class Baseline(nn.Module):
         outputs, L_cons, low_L_cons, cca_loss = self.encode_decode(
             rgb,
             modal_x,
-            vlsp_prior=semantic_prior
+            semantic_prior=semantic_prior
         )
 
         return outputs, L_cons, low_L_cons, semantic_prior, cca_loss

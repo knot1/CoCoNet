@@ -14,12 +14,10 @@ class CCALoss(nn.Module):
 
     def forward(self, feat_a: torch.Tensor, feat_b: torch.Tensor) -> torch.Tensor:
         if feat_a is None or feat_b is None:
-            if feat_a is not None:
-                return feat_a.new_zeros(1)
-            if feat_b is not None:
-                return feat_b.new_zeros(1)
-            device = feat_a.device if feat_a is not None else feat_b.device if feat_b is not None else "cpu"
-            return torch.tensor(0.0, device=device)
+            if feat_a is None and feat_b is None:
+                return torch.tensor(0.0, device="cpu")
+            ref = feat_a if feat_a is not None else feat_b
+            return ref.new_zeros(1)
 
         vec_a = self._pool(feat_a)
         vec_b = self._pool(feat_b)
