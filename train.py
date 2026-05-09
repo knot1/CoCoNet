@@ -83,7 +83,7 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
                     dsm_patches = torch.from_numpy(dsm_patches).cuda()
 
                     # Do the inference
-                    outs, _, _, _, _ = model(image_patches, dsm_patches)
+                    outs, _, _, _, _, _ = model(image_patches, dsm_patches)
                     outs = outs.data.cpu().numpy()
 
                     # Fill in the results array
@@ -127,7 +127,9 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
     ablation_cfg = getattr(exp_cfg, "ablation", None) if exp_cfg is not None else None
     cca_cfg = getattr(exp_cfg, "cca", None) if exp_cfg is not None else None
     debug_cfg = getattr(exp_cfg, "debug", None) if exp_cfg is not None else None
-    cca_enabled = bool(getattr(ablation_cfg, "cca", False)) and bool(getattr(cca_cfg, "enable", False))
+    cca_enabled = bool(getattr(ablation_cfg, "cca", False)) and bool(getattr(cca_cfg, "enable", False)) and (
+        getattr(cca_cfg, "position", "stagewise") == "stagewise"
+    )
     debug_enabled = bool(getattr(debug_cfg, "save_features", False)) or bool(
         getattr(debug_cfg, "save_attention", False)
     ) or bool(getattr(debug_cfg, "save_frequency_maps", False))
@@ -160,7 +162,7 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             opt, dsm, target = opt.cuda(), dsm.cuda(), target.cuda()
             optimizer.zero_grad()
 
-            output, L_cons, low_L_cons, semantic_prior, aux_outputs = model(opt, dsm)
+            output, L_cons, low_L_cons, cca_loss, semantic_prior, aux_outputs = model(opt, dsm)
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
             
@@ -177,20 +179,8 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
                 # KL divergence between predicted class distribution and CLIP semantic prior.
                 loss_sem = F.kl_div(pred_log, target_prior, reduction="batchmean", log_target=False)
                 loss = loss + semantic_weight * loss_sem
-            if cca_enabled and aux_outputs is not None:
-                rgb_logits = aux_outputs.get("rgb_logits")
-                dsm_logits = aux_outputs.get("dsm_logits")
-                if rgb_logits is not None and dsm_logits is not None:
-                    rgb_probs = F.softmax(rgb_logits, dim=1)
-                    dsm_probs = F.softmax(dsm_logits, dim=1)
-                    loss_type = getattr(cca_cfg, "loss_type", "mse")
-                    if loss_type == "mse":
-                        loss_cca = F.mse_loss(rgb_probs, dsm_probs)
-                    elif loss_type == "l1":
-                        loss_cca = F.l1_loss(rgb_probs, dsm_probs)
-                    else:
-                        raise ValueError(f"Unsupported CCA loss_type: {loss_type}")
-                    loss = loss + getattr(cca_cfg, "loss_weight", 0.0) * loss_cca
+            if cca_enabled and cca_loss is not None:
+                loss = loss + getattr(cca_cfg, "loss_weight", 0.0) * cca_loss
 
             if debug_enabled and aux_outputs is not None and batch_idx == 0:
                 debug_payload = aux_outputs.get("debug")
@@ -291,7 +281,7 @@ def visualize_testloader(model, test_loader, palette, save_root):
     with torch.no_grad():
         for img, dsm, _ in test_loader:
             img, dsm = img.cuda(), dsm.cuda()
-            pred, _, _, _, _ = model(img, dsm)
+            pred, _, _, _, _, _ = model(img, dsm)
             pred = pred.data.cpu().numpy()
             pred = np.argmax(pred, axis=1)
             for i in range(pred.shape[0]):

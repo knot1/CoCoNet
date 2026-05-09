@@ -51,7 +51,7 @@ fdr:
 
 cca:
   enable: true
-  position: "post_decoder"
+  position: "stagewise"
   loss_weight: 0.05
   loss_type: "mse"
 

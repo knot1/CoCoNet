@@ -306,6 +306,7 @@ class RGBXTransformer(nn.Module):
         self.ablation_cfg = getattr(cfg, "ablation", None) if cfg is not None else None
         self.vlsp_cfg = getattr(cfg, "vlsp", None) if cfg is not None else None
         self.fdr_cfg = getattr(cfg, "fdr", None) if cfg is not None else None
+        self.cca_cfg = getattr(cfg, "cca", None) if cfg is not None else None
         self.debug_cfg = getattr(cfg, "debug", None) if cfg is not None else None
         if in_chans is not None:
             self.in_chans = in_chans
@@ -421,6 +422,19 @@ class RGBXTransformer(nn.Module):
         self.fdr_enabled = bool(getattr(self.ablation_cfg, "fdr", False)) and bool(
             getattr(self.fdr_cfg, "enable", False)
         )
+        self.cca_position = getattr(self.cca_cfg, "position", "stagewise") if self.cca_cfg is not None else "stagewise"
+        self.cca_enabled = bool(getattr(self.ablation_cfg, "cca", False)) and bool(
+            getattr(self.cca_cfg, "enable", False)
+        ) and self.cca_position == "stagewise"
+        self.cca_loss = None
+        if self.cca_enabled:
+            loss_type = getattr(self.cca_cfg, "loss_type", "mse")
+            if loss_type == "mse":
+                self.cca_loss = F.mse_loss
+            elif loss_type == "l1":
+                self.cca_loss = F.l1_loss
+            else:
+                raise ValueError(f"Unsupported CCA loss_type: {loss_type}")
         self.vlsp_branch = getattr(self.vlsp_cfg, "branch", "rgb") if self.vlsp_cfg is not None else "rgb"
         self.fdr_branch = getattr(self.fdr_cfg, "branch", "dsm") if self.fdr_cfg is not None else "dsm"
         self.vlsp_stages = self._normalize_stages(self.vlsp_cfg)
@@ -431,6 +445,7 @@ class RGBXTransformer(nn.Module):
         self.save_frequency_maps = bool(
             getattr(self.debug_cfg, "save_frequency_maps", False)
         ) if self.debug_cfg is not None else False
+        self.last_debug_data = None
 
         self.vlsp_modules = nn.ModuleDict()
         if self.vlsp_enabled and self.vlsp_branch == "rgb":
@@ -504,12 +519,18 @@ class RGBXTransformer(nn.Module):
 
         return x_rgb, x_e
 
+    def _compute_cca_loss(self, rgb_feat, dsm_feat):
+        if self.cca_loss is None:
+            return 0.0
+        return self.cca_loss(rgb_feat, dsm_feat)
+
     def forward_features(self, x_rgb, x_e, semantic_prior=None):
         B = x_rgb.shape[0]
         fused_features = []
         rgb_features = []
         dsm_features = []
         debug_data = None
+        cca_loss = x_rgb.new_zeros(1)
 
         if self.save_features or self.save_attention or self.save_frequency_maps:
             debug_data = {
@@ -533,6 +554,8 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_rgb, x_e = self._apply_modality_modules(stage_idx, x_rgb, x_e, semantic_prior, debug_data)
+        if self.cca_enabled:
+            cca_loss = cca_loss + self._compute_cca_loss(x_rgb, x_e)
         rgb_features.append(x_rgb)
         dsm_features.append(x_e)
         fused = self.fuse1(x_rgb, x_e)
@@ -555,6 +578,8 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_rgb, x_e = self._apply_modality_modules(stage_idx, x_rgb, x_e, semantic_prior, debug_data)
+        if self.cca_enabled:
+            cca_loss = cca_loss + self._compute_cca_loss(x_rgb, x_e)
         rgb_features.append(x_rgb)
         dsm_features.append(x_e)
         fused = self.fuse2(x_rgb, x_e)
@@ -577,6 +602,8 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_rgb, x_e = self._apply_modality_modules(stage_idx, x_rgb, x_e, semantic_prior, debug_data)
+        if self.cca_enabled:
+            cca_loss = cca_loss + self._compute_cca_loss(x_rgb, x_e)
         rgb_features.append(x_rgb)
         dsm_features.append(x_e)
         fused = self.fuse3(x_rgb, x_e)
@@ -599,6 +626,8 @@ class RGBXTransformer(nn.Module):
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_rgb, x_e = self._apply_modality_modules(stage_idx, x_rgb, x_e, semantic_prior, debug_data)
+        if self.cca_enabled:
+            cca_loss = cca_loss + self._compute_cca_loss(x_rgb, x_e)
         rgb_features.append(x_rgb)
         dsm_features.append(x_e)
         fused = self.fuse4(x_rgb, x_e)
@@ -608,22 +637,19 @@ class RGBXTransformer(nn.Module):
             debug_data["dsm_features"][stage_idx] = self._debug_tensor(x_e)
             debug_data["fused_features"][stage_idx] = self._debug_tensor(fused)
 
-        last = fused_features[-1]
-        if isinstance(last, (tuple, list)):
-            last = last[0]
-
-        L_cons = last.new_zeros(1)
-        low_L_cons = last.new_zeros(1)
-        return fused_features, rgb_features, dsm_features, debug_data, L_cons, low_L_cons
+        self.last_debug_data = debug_data
+        return fused_features, rgb_features, dsm_features, cca_loss
 
     def forward(self, x_rgb, x_e, semantic_prior=None):
-        out_semantic, rgb_features, dsm_features, debug_data, L_cons, low_L_cons = self.forward_features(
+        out_semantic, rgb_features, dsm_features, cca_loss = self.forward_features(
             x_rgb,
             x_e,
             semantic_prior=semantic_prior
         )
 
-        return out_semantic, rgb_features, dsm_features, debug_data, L_cons, low_L_cons
+        L_cons = x_rgb.new_zeros(1)
+        low_L_cons = x_rgb.new_zeros(1)
+        return out_semantic, rgb_features, dsm_features, cca_loss, L_cons, low_L_cons
 
 
 def load_dualpath_model(model, model_file, in_chans):

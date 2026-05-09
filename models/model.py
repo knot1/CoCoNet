@@ -85,11 +85,6 @@ class Baseline(nn.Module):
         self.channels = [64, 128, 320, 512]
         self.norm_layer = norm_layer
         self.exp_cfg = exp_cfg if exp_cfg is not None else cfg
-        self.ablation_cfg = getattr(self.exp_cfg, "ablation", None) if self.exp_cfg is not None else None
-        self.cca_cfg = getattr(self.exp_cfg, "cca", None) if self.exp_cfg is not None else None
-        self.cca_enabled = bool(getattr(self.ablation_cfg, "cca", False)) and bool(
-            getattr(self.cca_cfg, "enable", False)
-        )
         if in_chans is not None:
             self.in_chans = in_chans
         else:
@@ -124,13 +119,6 @@ class Baseline(nn.Module):
         from .Seg_head import DecoderHead
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
                                        embed_dim=cfg.decoder_embed_dim)
-        self.rgb_decode_head = None
-        self.dsm_decode_head = None
-        if self.cca_enabled:
-            self.rgb_decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes,
-                                               norm_layer=norm_layer, embed_dim=cfg.decoder_embed_dim)
-            self.dsm_decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes,
-                                               norm_layer=norm_layer, embed_dim=cfg.decoder_embed_dim)
 
         self.prompt_semantic = None
         prompt_cfg = getattr(cfg, "prompt_semantic", None)
@@ -154,18 +142,10 @@ class Baseline(nn.Module):
         init_weight(self.decode_head, nn.init.kaiming_normal_,
                     self.norm_layer, cfg.bn_eps, cfg.bn_momentum,
                     mode='fan_in', nonlinearity='relu')
-        if self.rgb_decode_head is not None:
-            init_weight(self.rgb_decode_head, nn.init.kaiming_normal_,
-                        self.norm_layer, cfg.bn_eps, cfg.bn_momentum,
-                        mode='fan_in', nonlinearity='relu')
-        if self.dsm_decode_head is not None:
-            init_weight(self.dsm_decode_head, nn.init.kaiming_normal_,
-                        self.norm_layer, cfg.bn_eps, cfg.bn_momentum,
-                        mode='fan_in', nonlinearity='relu')
 
     def encode_decode(self, rgb, modal_x, semantic_prior=None):
         ori_size = rgb.shape
-        x_semantic, rgb_features, dsm_features, debug_data, L_cons, low_L_cons = self.backbone(
+        x_semantic, rgb_features, dsm_features, cca_loss, L_cons, low_L_cons = self.backbone(
             rgb,
             modal_x,
             semantic_prior=semantic_prior
@@ -174,21 +154,11 @@ class Baseline(nn.Module):
         out_semantic = self.decode_head.forward(x_semantic)
         out_semantic = F.interpolate(out_semantic, size=ori_size[2:], mode='bilinear', align_corners=False)
 
-        rgb_logits = None
-        dsm_logits = None
-        if self.cca_enabled and self.rgb_decode_head is not None and self.dsm_decode_head is not None:
-            rgb_logits = self.rgb_decode_head.forward(rgb_features)
-            dsm_logits = self.dsm_decode_head.forward(dsm_features)
-            rgb_logits = F.interpolate(rgb_logits, size=ori_size[2:], mode='bilinear', align_corners=False)
-            dsm_logits = F.interpolate(dsm_logits, size=ori_size[2:], mode='bilinear', align_corners=False)
-
         aux_outputs = {
-            "rgb_logits": rgb_logits,
-            "dsm_logits": dsm_logits,
-            "debug": debug_data
+            "debug": self.backbone.last_debug_data
         }
 
-        return out_semantic, L_cons, low_L_cons, aux_outputs
+        return out_semantic, L_cons, low_L_cons, cca_loss, aux_outputs
 
     def forward(self, rgb, modal_x):
         if modal_x.ndim == 3:
@@ -198,10 +168,10 @@ class Baseline(nn.Module):
         if isinstance(semantic_prior, (tuple, list)):
             semantic_prior = semantic_prior[0]
 
-        outputs, L_cons, low_L_cons, aux_outputs = self.encode_decode(
+        outputs, L_cons, low_L_cons, cca_loss, aux_outputs = self.encode_decode(
             rgb,
             modal_x,
             semantic_prior=semantic_prior
         )
 
-        return outputs, L_cons, low_L_cons, semantic_prior, aux_outputs
+        return outputs, L_cons, low_L_cons, cca_loss, semantic_prior, aux_outputs
