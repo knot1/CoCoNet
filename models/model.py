@@ -79,10 +79,12 @@ def group_weight(weight_group, module, norm_layer, lr):
 
 
 class Baseline(nn.Module):
-    def __init__(self, cfg=None, num_classes=None, norm_layer=nn.BatchNorm2d, in_chans=None, class_labels=None):
+    def __init__(self, cfg=None, num_classes=None, norm_layer=nn.BatchNorm2d, in_chans=None, class_labels=None,
+                 exp_cfg=None):
         super(Baseline, self).__init__()
         self.channels = [64, 128, 320, 512]
         self.norm_layer = norm_layer
+        self.exp_cfg = exp_cfg if exp_cfg is not None else cfg
         if in_chans is not None:
             self.in_chans = in_chans
         else:
@@ -90,23 +92,29 @@ class Baseline(nn.Module):
 
         if cfg.backbone == 'mit_b5':
             from .encoder import mit_b5 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes,
+                                     cfg=self.exp_cfg)
         elif cfg.backbone == 'mit_b4':
             from .encoder import mit_b4 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes,
+                                     cfg=self.exp_cfg)
         elif cfg.backbone == 'mit_b2':
             from .encoder import mit_b2 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes,
+                                     cfg=self.exp_cfg)
         elif cfg.backbone == 'mit_b1':
             from .encoder import mit_b1 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes,
+                                     cfg=self.exp_cfg)
         elif cfg.backbone == 'mit_b0':
             from .encoder import mit_b0 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes,
+                                     cfg=self.exp_cfg)
             self.channels = [32, 64, 160, 256]
         else:
             from .encoder import mit_b4 as backbone
-            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes)
+            self.backbone = backbone(norm_fuse=norm_layer, in_chans=self.in_chans, num_classes=num_classes,
+                                     cfg=self.exp_cfg)
 
         from .Seg_head import DecoderHead
         self.decode_head = DecoderHead(in_channels=self.channels, num_classes=num_classes, norm_layer=norm_layer,
@@ -137,16 +145,21 @@ class Baseline(nn.Module):
 
     def encode_decode(self, rgb, modal_x, semantic_prior=None):
         ori_size = rgb.shape
-        x_semantic, L_cons, low_L_cons = self.backbone(
+        fused_features, rgb_features, dsm_features, debug_data = self.backbone(
             rgb,
             modal_x,
             semantic_prior=semantic_prior
         )
 
-        out_semantic = self.decode_head.forward(x_semantic)
+        out_semantic = self.decode_head.forward(fused_features)
         out_semantic = F.interpolate(out_semantic, size=ori_size[2:], mode='bilinear', align_corners=False)
+        cca_loss = self.backbone.last_cca_loss
 
-        return out_semantic, L_cons, low_L_cons
+        aux_outputs = {
+            "debug": debug_data
+        }
+
+        return out_semantic, cca_loss, aux_outputs
 
     def forward(self, rgb, modal_x):
         if modal_x.ndim == 3:
@@ -156,10 +169,10 @@ class Baseline(nn.Module):
         if isinstance(semantic_prior, (tuple, list)):
             semantic_prior = semantic_prior[0]
 
-        outputs, L_cons, low_L_cons = self.encode_decode(
+        outputs, cca_loss, aux_outputs = self.encode_decode(
             rgb,
             modal_x,
             semantic_prior=semantic_prior
         )
 
-        return outputs, L_cons, low_L_cons, semantic_prior
+        return outputs, cca_loss, semantic_prior, aux_outputs

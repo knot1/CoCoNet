@@ -32,6 +32,34 @@ model:
     pretrained: "openai"
     image_size: 224
 
+ablation:
+  vlsp: true
+  fdr: true
+  cca: true
+
+vlsp:
+  enable: true
+  branch: rgb
+  stages: [3]
+  type: "clip_text_guided_modulation"
+
+fdr:
+  enable: true
+  branch: dsm
+  stages: [2, 3]
+  mode: "wavelet"
+
+cca:
+  enable: true
+  position: "feature_level"
+  loss_weight: 1.0
+  loss_type: "cosine"
+
+debug:
+  save_features: true
+  save_attention: true
+  save_frequency_maps: true
+
 training:
   epochs: 100
   save_epoch: 1

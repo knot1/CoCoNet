@@ -11,6 +11,7 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 import torch_dct as DCT
 import os
+from .frequency_modules import FrequencyResidualRefiner
 
 class DWConv(nn.Module):
     def __init__(self, dim=768):
@@ -255,18 +256,22 @@ class SemanticGuidedFeatureModulation(nn.Module):
 
         # small initial value avoids destroying pretrained SegFormer features at the beginning
         self.gamma = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
+        self.last_gate = None
 
     def forward(self, feat: torch.Tensor, semantic_prior=None, conflict_map=None):
         if semantic_prior is None:
+            self.last_gate = None
             return feat
 
         if semantic_prior.dim() != 2:
+            self.last_gate = None
             return feat
 
         B, C, H, W = feat.shape
 
         # If CLIP returns tuple/list, use the first tensor outside this module.
         if semantic_prior.shape[0] != B:
+            self.last_gate = None
             return feat
 
         # semantic channel gate: [B, K] -> [B, C, 1, 1]
@@ -285,6 +290,7 @@ class SemanticGuidedFeatureModulation(nn.Module):
         else:
             gate = channel_gate
 
+        self.last_gate = gate.detach()
         return feat + self.gamma * feat * gate
 
 
@@ -292,10 +298,16 @@ class RGBXTransformer(nn.Module):
     def __init__(self, img_size=256, patch_size=16, in_chans=None, num_classes=1000, embed_dims=[64, 128, 256, 512],
                  num_heads=[1, 2, 4, 8], mlp_ratios=[4, 4, 4, 4], qkv_bias=False, qk_scale=None, drop_rate=0.,
                  attn_drop_rate=0., drop_path_rate=0., norm_layer=nn.LayerNorm, norm_fuse=nn.BatchNorm2d,
-                 depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1]):
+                 depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1], cfg=None):
         super().__init__()
         self.num_classes = num_classes
         self.depths = depths
+        self.cfg = cfg
+        self.ablation_cfg = getattr(cfg, "ablation", None) if cfg is not None else None
+        self.vlsp_cfg = getattr(cfg, "vlsp", None) if cfg is not None else None
+        self.fdr_cfg = getattr(cfg, "fdr", None) if cfg is not None else None
+        self.cca_cfg = getattr(cfg, "cca", None) if cfg is not None else None
+        self.debug_cfg = getattr(cfg, "debug", None) if cfg is not None else None
         if in_chans is not None:
             self.in_chans = in_chans
         else:
@@ -403,10 +415,53 @@ class RGBXTransformer(nn.Module):
         self.extra_norm4 = norm_layer(embed_dims[3])
 
         self.fuse4 = SimpleFusion(c=embed_dims[3])
-        self.semantic_mod4 = SemanticGuidedFeatureModulation(
-            num_classes=num_classes,
-            channels=embed_dims[3]
+        self.stage_dims = embed_dims
+        self.vlsp_enabled = bool(getattr(self.ablation_cfg, "vlsp", False)) and bool(
+            getattr(self.vlsp_cfg, "enable", False)
         )
+        self.fdr_enabled = bool(getattr(self.ablation_cfg, "fdr", False)) and bool(
+            getattr(self.fdr_cfg, "enable", False)
+        )
+        self.cca_position = getattr(self.cca_cfg, "position", "feature_level") if self.cca_cfg is not None else "feature_level"
+        self.cca_enabled = bool(getattr(self.ablation_cfg, "cca", False)) and bool(
+            getattr(self.cca_cfg, "enable", False)
+        ) and self.cca_position == "feature_level"
+        self.cca_loss_fn = None
+        if self.cca_enabled:
+            loss_type = getattr(self.cca_cfg, "loss_type", "cosine")
+            if loss_type == "cosine":
+                self.cca_loss_fn = self._cosine_alignment_loss
+            else:
+                raise ValueError(f"Unsupported CCA loss_type: {loss_type}")
+        self.vlsp_branch = getattr(self.vlsp_cfg, "branch", "rgb") if self.vlsp_cfg is not None else "rgb"
+        self.fdr_branch = getattr(self.fdr_cfg, "branch", "dsm") if self.fdr_cfg is not None else "dsm"
+        self.vlsp_stages = self._normalize_stages(self.vlsp_cfg)
+        self.fdr_stages = self._normalize_stages(self.fdr_cfg)
+
+        self.save_features = bool(getattr(self.debug_cfg, "save_features", False)) if self.debug_cfg is not None else False
+        self.save_attention = bool(getattr(self.debug_cfg, "save_attention", False)) if self.debug_cfg is not None else False
+        self.save_frequency_maps = bool(
+            getattr(self.debug_cfg, "save_frequency_maps", False)
+        ) if self.debug_cfg is not None else False
+        self.last_debug_data = None
+        self.last_cca_loss = None
+
+        self.vlsp_modules = nn.ModuleDict()
+        if self.vlsp_enabled and self.vlsp_branch == "rgb":
+            for stage in self.vlsp_stages:
+                if 1 <= stage <= len(self.stage_dims):
+                    channels = self.stage_dims[stage - 1]
+                    self.vlsp_modules[str(stage)] = SemanticGuidedFeatureModulation(
+                        num_classes=num_classes,
+                        channels=channels
+                    )
+
+        self.fdr_modules = nn.ModuleDict()
+        if self.fdr_enabled and self.fdr_branch == "dsm":
+            for stage in self.fdr_stages:
+                if 1 <= stage <= len(self.stage_dims):
+                    channels = self.stage_dims[stage - 1]
+                    self.fdr_modules[str(stage)] = FrequencyResidualRefiner(channels)
 
         self.apply(self._init_weights)
 
@@ -431,11 +486,66 @@ class RGBXTransformer(nn.Module):
         else:
             raise TypeError('pretrained must be a str or None')
 
+    def _normalize_stages(self, module_cfg):
+        if module_cfg is None:
+            return []
+        stages = getattr(module_cfg, "stages", [])
+        if stages is None:
+            return []
+        if isinstance(stages, int):
+            return [stages]
+        return [int(stage) for stage in stages]
+
+    def _debug_tensor(self, tensor):
+        return tensor.detach()
+
+    def _cosine_alignment_loss(self, rgb_feat, dsm_feat):
+        cos = F.cosine_similarity(rgb_feat, dsm_feat, dim=1, eps=1e-8)
+        return 1.0 - cos.mean()
+
+    def _apply_modality_modules(self, stage_idx, x_rgb, x_e, semantic_prior=None, debug_data=None):
+        if self.vlsp_enabled and stage_idx in self.vlsp_stages and self.vlsp_branch == "rgb":
+            key = str(stage_idx)
+            if key in self.vlsp_modules:
+                module = self.vlsp_modules[key]
+                x_rgb = module(x_rgb, semantic_prior=semantic_prior, conflict_map=None)
+                if debug_data is not None and self.save_attention and module.last_gate is not None:
+                    debug_data["vlsp_attention"][stage_idx] = self._debug_tensor(module.last_gate)
+
+        if self.fdr_enabled and stage_idx in self.fdr_stages and self.fdr_branch == "dsm":
+            key = str(stage_idx)
+            if key in self.fdr_modules:
+                module = self.fdr_modules[key]
+                x_e = module(x_e)
+                if debug_data is not None and self.save_frequency_maps and module.last_high is not None:
+                    debug_data["fdr_frequency"][stage_idx] = self._debug_tensor(module.last_high)
+
+        return x_rgb, x_e
+
+    def _compute_cca_loss(self, rgb_feat, dsm_feat):
+        if self.cca_loss_fn is None:
+            return rgb_feat.new_zeros(())
+        return self.cca_loss_fn(rgb_feat, dsm_feat)
+
     def forward_features(self, x_rgb, x_e, semantic_prior=None):
         B = x_rgb.shape[0]
-        outs_semantic = []
+        fused_features = []
+        rgb_features = []
+        dsm_features = []
+        debug_data = None
+        cca_loss = x_rgb.new_zeros(())
+
+        if self.save_features or self.save_attention or self.save_frequency_maps:
+            debug_data = {
+                "rgb_features": {},
+                "dsm_features": {},
+                "fused_features": {},
+                "vlsp_attention": {},
+                "fdr_frequency": {},
+            }
 
         # Stage 1
+        stage_idx = 1
         x_rgb, H, W = self.patch_embed1(x_rgb)
         x_e, _, _ = self.extra_patch_embed1(x_e)
         for blk in self.block1:
@@ -446,12 +556,18 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm1(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-
-        outs_semantic.append(self.fuse1(x_rgb, x_e))
-
-
+        x_rgb, x_e = self._apply_modality_modules(stage_idx, x_rgb, x_e, semantic_prior, debug_data)
+        rgb_features.append(x_rgb)
+        dsm_features.append(x_e)
+        fused = self.fuse1(x_rgb, x_e)
+        fused_features.append(fused)
+        if debug_data is not None and self.save_features:
+            debug_data["rgb_features"][stage_idx] = self._debug_tensor(x_rgb)
+            debug_data["dsm_features"][stage_idx] = self._debug_tensor(x_e)
+            debug_data["fused_features"][stage_idx] = self._debug_tensor(fused)
 
         # Stage 2
+        stage_idx = 2
         x_rgb, H, W = self.patch_embed2(x_rgb)
         x_e, _, _ = self.extra_patch_embed2(x_e)
         for blk in self.block2:
@@ -462,9 +578,18 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm2(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        outs_semantic.append(self.fuse2(x_rgb, x_e))
+        x_rgb, x_e = self._apply_modality_modules(stage_idx, x_rgb, x_e, semantic_prior, debug_data)
+        rgb_features.append(x_rgb)
+        dsm_features.append(x_e)
+        fused = self.fuse2(x_rgb, x_e)
+        fused_features.append(fused)
+        if debug_data is not None and self.save_features:
+            debug_data["rgb_features"][stage_idx] = self._debug_tensor(x_rgb)
+            debug_data["dsm_features"][stage_idx] = self._debug_tensor(x_e)
+            debug_data["fused_features"][stage_idx] = self._debug_tensor(fused)
 
         # Stage 3
+        stage_idx = 3
         x_rgb, H, W = self.patch_embed3(x_rgb)
         x_e, _, _ = self.extra_patch_embed3(x_e)
         for blk in self.block3:
@@ -475,9 +600,18 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm3(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        outs_semantic.append(self.fuse3(x_rgb, x_e))
+        x_rgb, x_e = self._apply_modality_modules(stage_idx, x_rgb, x_e, semantic_prior, debug_data)
+        rgb_features.append(x_rgb)
+        dsm_features.append(x_e)
+        fused = self.fuse3(x_rgb, x_e)
+        fused_features.append(fused)
+        if debug_data is not None and self.save_features:
+            debug_data["rgb_features"][stage_idx] = self._debug_tensor(x_rgb)
+            debug_data["dsm_features"][stage_idx] = self._debug_tensor(x_e)
+            debug_data["fused_features"][stage_idx] = self._debug_tensor(fused)
 
         # Stage 4
+        stage_idx = 4
         x_rgb, H, W = self.patch_embed4(x_rgb)
         x_e, _, _ = self.extra_patch_embed4(x_e)
         for blk in self.block4:
@@ -488,36 +622,29 @@ class RGBXTransformer(nn.Module):
         x_e = self.extra_norm4(x_e)
         x_rgb = x_rgb.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        
-        # conflict map between two branches before fusion: [B, 1, H, W]
-        conflict_map = 1.0 - torch.sum(
-            F.normalize(x_rgb, dim=1) * F.normalize(x_e, dim=1),
-            dim=1,
-            keepdim=True
-        )
-        conflict_map = torch.clamp(conflict_map, min=0.0, max=2.0)
+        x_rgb, x_e = self._apply_modality_modules(stage_idx, x_rgb, x_e, semantic_prior, debug_data)
+        if self.cca_enabled:
+            cca_loss = self._compute_cca_loss(x_rgb, x_e)
+        rgb_features.append(x_rgb)
+        dsm_features.append(x_e)
+        fused = self.fuse4(x_rgb, x_e)
+        fused_features.append(fused)
+        if debug_data is not None and self.save_features:
+            debug_data["rgb_features"][stage_idx] = self._debug_tensor(x_rgb)
+            debug_data["dsm_features"][stage_idx] = self._debug_tensor(x_e)
+            debug_data["fused_features"][stage_idx] = self._debug_tensor(fused)
 
-        fused4 = self.fuse4(x_rgb, x_e)
-        fused4 = self.semantic_mod4(fused4, semantic_prior=semantic_prior, conflict_map=conflict_map)
-        outs_semantic.append(fused4)
-   
-        last = outs_semantic[-1]
-        if isinstance(last, (tuple, list)):
-            last = last[0]
-        device = last.device
-
-        L_cons = last.new_zeros(1)
-        low_L_cons = last.new_zeros(1)
-        return outs_semantic, L_cons, low_L_cons
+        self.last_debug_data = debug_data
+        self.last_cca_loss = cca_loss
+        return fused_features, rgb_features, dsm_features, debug_data
 
     def forward(self, x_rgb, x_e, semantic_prior=None):
-        out_semantic, L_cons, low_L_cons = self.forward_features(
+        fused_features, rgb_features, dsm_features, debug_data = self.forward_features(
             x_rgb,
             x_e,
             semantic_prior=semantic_prior
         )
-        
-        return out_semantic, L_cons, low_L_cons
+        return fused_features, rgb_features, dsm_features, debug_data
 
 
 def load_dualpath_model(model, model_file, in_chans):
@@ -574,48 +701,54 @@ def _adapt_first_conv(weight, in_chans: int):
 
 
 class mit_b0(RGBXTransformer):
-    def __init__(self, fuse_cfg=None, **kwargs):
+    def __init__(self, fuse_cfg=None, cfg=None, **kwargs):
         super(mit_b0, self).__init__(
             patch_size=4, embed_dims=[32, 64, 160, 256], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[2, 2, 2, 2], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), cfg=cfg)
 
 
 class mit_b1(RGBXTransformer):
-    def __init__(self, fuse_cfg=None, **kwargs):
+    def __init__(self, fuse_cfg=None, cfg=None, **kwargs):
         super(mit_b1, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[2, 2, 2, 2], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), cfg=cfg)
 
 
 class mit_b2(RGBXTransformer):
-    def __init__(self, fuse_cfg=None, **kwargs):
+    def __init__(self, fuse_cfg=None, cfg=None, **kwargs):
         super(mit_b2, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), cfg=cfg)
 
 
 class mit_b3(RGBXTransformer):
-    def __init__(self, fuse_cfg=None, **kwargs):
+    def __init__(self, fuse_cfg=None, cfg=None, **kwargs):
         super(mit_b3, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 4, 18, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), cfg=cfg)
 
 
 class mit_b4(RGBXTransformer):
-    def __init__(self, in_chans, fuse_cfg=None, **kwargs):
+    def __init__(self, in_chans, fuse_cfg=None, cfg=None, **kwargs):
         super(mit_b4, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 8, 27, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=in_chans, num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=in_chans,
+            num_classes=kwargs.get('num_classes', 1000), cfg=cfg)
 
 
 class mit_b5(RGBXTransformer):
-    def __init__(self, fuse_cfg=None, **kwargs):
+    def __init__(self, fuse_cfg=None, cfg=None, **kwargs):
         super(mit_b5, self).__init__(
             patch_size=4, embed_dims=[64, 128, 320, 512], num_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
             qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), depths=[3, 6, 40, 3], sr_ratios=[8, 4, 2, 1],
-            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None), num_classes=kwargs.get('num_classes', 1000))
+            drop_rate=0.0, drop_path_rate=0.1, in_chans=kwargs.get('in_chans', None),
+            num_classes=kwargs.get('num_classes', 1000), cfg=cfg)

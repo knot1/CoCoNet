@@ -78,6 +78,20 @@ class FrequencyModule(nn.Module):
         return high, low
 
 
+class FrequencyResidualRefiner(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.freq = FrequencyModule(dim)
+        self.last_high = None
+        self.last_low = None
+
+    def forward(self, x):
+        high, low = self.freq(x)
+        self.last_high = high
+        self.last_low = low
+        return x + high
+
+
 def _create_normalized_distance_grid(h: int, w: int) -> torch.Tensor:
     yy = torch.arange(h) - h // 2
     xx = torch.arange(w) - w // 2
