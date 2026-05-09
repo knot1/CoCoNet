@@ -145,20 +145,21 @@ class Baseline(nn.Module):
 
     def encode_decode(self, rgb, modal_x, semantic_prior=None):
         ori_size = rgb.shape
-        x_semantic, rgb_features, dsm_features, cca_loss, L_cons, low_L_cons = self.backbone(
+        fused_features, rgb_features, dsm_features, debug_data = self.backbone(
             rgb,
             modal_x,
             semantic_prior=semantic_prior
         )
 
-        out_semantic = self.decode_head.forward(x_semantic)
+        out_semantic = self.decode_head.forward(fused_features)
         out_semantic = F.interpolate(out_semantic, size=ori_size[2:], mode='bilinear', align_corners=False)
+        cca_loss = self.backbone.last_cca_loss
 
         aux_outputs = {
-            "debug": self.backbone.last_debug_data
+            "debug": debug_data
         }
 
-        return out_semantic, L_cons, low_L_cons, cca_loss, aux_outputs
+        return out_semantic, cca_loss, aux_outputs
 
     def forward(self, rgb, modal_x):
         if modal_x.ndim == 3:
@@ -168,10 +169,10 @@ class Baseline(nn.Module):
         if isinstance(semantic_prior, (tuple, list)):
             semantic_prior = semantic_prior[0]
 
-        outputs, L_cons, low_L_cons, cca_loss, aux_outputs = self.encode_decode(
+        outputs, cca_loss, aux_outputs = self.encode_decode(
             rgb,
             modal_x,
             semantic_prior=semantic_prior
         )
 
-        return outputs, L_cons, low_L_cons, cca_loss, semantic_prior, aux_outputs
+        return outputs, cca_loss, semantic_prior, aux_outputs

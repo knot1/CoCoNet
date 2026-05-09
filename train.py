@@ -83,7 +83,7 @@ def test(dataset_cfg, training_cfg, model, test_ids, all=False, test_loader=None
                     dsm_patches = torch.from_numpy(dsm_patches).cuda()
 
                     # Do the inference
-                    outs, _, _, _, _, _ = model(image_patches, dsm_patches)
+                    outs, _, _, _ = model(image_patches, dsm_patches)
                     outs = outs.data.cpu().numpy()
 
                     # Fill in the results array
@@ -128,7 +128,7 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
     cca_cfg = getattr(exp_cfg, "cca", None) if exp_cfg is not None else None
     debug_cfg = getattr(exp_cfg, "debug", None) if exp_cfg is not None else None
     cca_enabled = bool(getattr(ablation_cfg, "cca", False)) and bool(getattr(cca_cfg, "enable", False)) and (
-        getattr(cca_cfg, "position", "stagewise") == "stagewise"
+        getattr(cca_cfg, "position", "feature_level") == "feature_level"
     )
     debug_enabled = bool(getattr(debug_cfg, "save_features", False)) or bool(
         getattr(debug_cfg, "save_attention", False)
@@ -162,11 +162,11 @@ def train(dataset_cfg, training_cfg, model, optimizer, scheduler, train_loader, 
             opt, dsm, target = opt.cuda(), dsm.cuda(), target.cuda()
             optimizer.zero_grad()
 
-            output, L_cons, low_L_cons, cca_loss, semantic_prior, aux_outputs = model(opt, dsm)
+            output, cca_loss, semantic_prior, aux_outputs = model(opt, dsm)
             loss_ce = CrossEntropy2d(output, target, weight=weights)
             loss_dice = dice_loss(output, target)
-            
-            loss = loss_ce + (L_cons * training_cfg.alpha) - (low_L_cons * training_cfg.beta) + (loss_dice * training_cfg.gamma)
+
+            loss = loss_ce + (loss_dice * training_cfg.gamma)
             if semantic_prior is not None and semantic_weight > 0:
                 log_probs = F.log_softmax(output, dim=1)
                 num_pixels = output.shape[2] * output.shape[3]
@@ -281,7 +281,7 @@ def visualize_testloader(model, test_loader, palette, save_root):
     with torch.no_grad():
         for img, dsm, _ in test_loader:
             img, dsm = img.cuda(), dsm.cuda()
-            pred, _, _, _, _, _ = model(img, dsm)
+            pred, _, _, _ = model(img, dsm)
             pred = pred.data.cpu().numpy()
             pred = np.argmax(pred, axis=1)
             for i in range(pred.shape[0]):

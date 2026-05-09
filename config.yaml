@@ -46,14 +46,14 @@ vlsp:
 fdr:
   enable: true
   branch: dsm
-  stages: [2]
+  stages: [2, 3]
   mode: "wavelet"
 
 cca:
   enable: true
-  position: "stagewise"
-  loss_weight: 0.05
-  loss_type: "mse"
+  position: "feature_level"
+  loss_weight: 1.0
+  loss_type: "cosine"
 
 debug:
   save_features: true
