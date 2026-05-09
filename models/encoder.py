@@ -430,7 +430,7 @@ class RGBXTransformer(nn.Module):
         if self.cca_enabled:
             loss_type = getattr(self.cca_cfg, "loss_type", "cosine")
             if loss_type == "cosine":
-                self.cca_loss_fn = "cosine"
+                self.cca_loss_fn = self._cosine_alignment_loss
             else:
                 raise ValueError(f"Unsupported CCA loss_type: {loss_type}")
         self.vlsp_branch = getattr(self.vlsp_cfg, "branch", "rgb") if self.vlsp_cfg is not None else "rgb"
@@ -494,10 +494,14 @@ class RGBXTransformer(nn.Module):
             return []
         if isinstance(stages, int):
             return [stages]
-        return [int(stage) for stage in list(stages)]
+        return [int(stage) for stage in stages]
 
     def _debug_tensor(self, tensor):
         return tensor.detach()
+
+    def _cosine_alignment_loss(self, rgb_feat, dsm_feat):
+        cos = F.cosine_similarity(rgb_feat, dsm_feat, dim=1, eps=1e-8)
+        return 1.0 - cos.mean()
 
     def _apply_modality_modules(self, stage_idx, x_rgb, x_e, semantic_prior=None, debug_data=None):
         if self.vlsp_enabled and stage_idx in self.vlsp_stages and self.vlsp_branch == "rgb":
@@ -521,10 +525,7 @@ class RGBXTransformer(nn.Module):
     def _compute_cca_loss(self, rgb_feat, dsm_feat):
         if self.cca_loss_fn is None:
             return rgb_feat.new_zeros(())
-        if self.cca_loss_fn == "cosine":
-            cos = F.cosine_similarity(rgb_feat, dsm_feat, dim=1, eps=1e-8)
-            return 1.0 - cos.mean()
-        return rgb_feat.new_zeros(())
+        return self.cca_loss_fn(rgb_feat, dsm_feat)
 
     def forward_features(self, x_rgb, x_e, semantic_prior=None):
         B = x_rgb.shape[0]
