@@ -521,7 +521,7 @@ class RGBXTransformer(nn.Module):
 
     def _compute_cca_loss(self, rgb_feat, dsm_feat):
         if self.cca_loss is None:
-            return 0.0
+            return rgb_feat.new_zeros(())
         return self.cca_loss(rgb_feat, dsm_feat)
 
     def forward_features(self, x_rgb, x_e, semantic_prior=None):
@@ -530,7 +530,7 @@ class RGBXTransformer(nn.Module):
         rgb_features = []
         dsm_features = []
         debug_data = None
-        cca_loss = x_rgb.new_zeros(1)
+        cca_loss = x_rgb.new_zeros(())
 
         if self.save_features or self.save_attention or self.save_frequency_maps:
             debug_data = {
