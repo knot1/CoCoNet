@@ -1,0 +1,49 @@
+# 忽略指定的两个文件夹（完整名称）
+Baseline_Potsdam_42/
+Baseline_Vaihingen_42/
+logs/
+losses/
+vlsp4_Vaihingen_42/
+vlsp34_Vaihingen_42/
+vlsp234_Vaihingen_42/
+# 可选：补充深度学习项目常见的忽略项（推荐添加，避免提交无关文件）
+# Python编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE配置文件
+.idea/
+.vscode/
+
+# 数据/日志/模型文件
+data/
+figs/
+*.pth
+*.pt
+*.log
+
+# 系统临时文件
+*.swp
+*.swo
+.DS_Store
+# 训练日志与模型文件夹
+logs/
+losses/
+figs/
+data/
+*_Potsdam*/
+*_Vaihingen*/
+vlsp*/
+
+# 模型权重文件
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.h5
+
+# Git 临时打包文件（可选，防止内部缓存变大）
+.git/objects/pack/
+.git/objects/*.pack
+.git/objects/*.idx
